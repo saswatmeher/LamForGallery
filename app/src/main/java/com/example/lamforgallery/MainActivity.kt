@@ -14,15 +14,21 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -49,10 +55,7 @@ class MainActivity : ComponentActivity() {
 
 
     // --- MODIFY PERMISSIONS (GENERALIZED) ---
-    // We need to keep track of what *type* of permission we just asked for
     private var currentPermissionType: PermissionType? = null
-
-    // We only need ONE launcher for all IntentSender requests
     private val permissionRequestLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartIntentSenderForResult()
@@ -66,8 +69,6 @@ class MainActivity : ComponentActivity() {
             val wasSuccessful = activityResult.resultCode == RESULT_OK
             Log.d(TAG, "Permission result for $type: ${if (wasSuccessful) "GRANTED" else "DENIED"}")
             viewModel.onPermissionResult(wasSuccessful, type)
-
-            // Clear the type after use
             currentPermissionType = null
         }
     // --- END MODIFY PERMISSIONS ---
@@ -89,8 +90,6 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             onLaunchPermissionRequest = { intentSender, type ->
                                 Log.d(TAG, "Launching permissionRequestLauncher for $type...")
-                                // Save the type so our launcher's callback knows
-                                // what it was for.
                                 currentPermissionType = type
                                 permissionRequestLauncher.launch(
                                     IntentSenderRequest.Builder(intentSender).build()
@@ -108,7 +107,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndRequestPermission() {
-        // ... (existing code, no changes) ...
         when {
             ContextCompat.checkSelfPermission(
                 this,
@@ -127,10 +125,198 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ... PermissionDeniedScreen composable remains unchanged ...
+
+@Composable
+fun AgentScreen(
+    viewModel: AgentViewModel,
+    onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    // This effect will watch for a new RequiresPermission state
+    LaunchedEffect(uiState.currentStatus) {
+        val status = uiState.currentStatus
+        if (status is AgentStatus.RequiresPermission) {
+            Log.d("AgentScreen", "Detected RequiresPermission state: ${status.type}")
+            onLaunchPermissionRequest(status.intentSender, status.type)
+        }
+    }
+
+    // This effect will auto-scroll to the bottom when a new message is added
+    LaunchedEffect(uiState.messages.size) {
+        if (uiState.messages.isNotEmpty()) {
+            coroutineScope.launch {
+                listState.animateScrollToItem(uiState.messages.size - 1)
+            }
+        }
+    }
+
+    Scaffold(
+        bottomBar = {
+            ChatInputBar(
+                status = uiState.currentStatus,
+                onSend = { inputText ->
+                    viewModel.sendUserInput(inputText)
+                }
+            )
+        }
+    ) { paddingValues ->
+        // This is our main chat content area
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues) // Apply padding from the Scaffold
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.Bottom // Stick to bottom
+        ) {
+            // Add a spacer to push content up when list is short
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            // Render each chat message
+            items(uiState.messages, key = { it.id }) { message ->
+                ChatMessageItem(message = message)
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Add a final spacer for padding at the bottom
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Renders a single chat message with different styling
+ * for USER, AGENT, and ERROR.
+ */
+@Composable
+fun ChatMessageItem(message: ChatMessage) {
+    val horizontalAlignment = when (message.sender) {
+        Sender.USER -> Alignment.End
+        Sender.AGENT, Sender.ERROR -> Alignment.Start
+    }
+
+    val backgroundColor = when (message.sender) {
+        Sender.USER -> MaterialTheme.colorScheme.primaryContainer
+        Sender.AGENT -> MaterialTheme.colorScheme.secondaryContainer
+        Sender.ERROR -> MaterialTheme.colorScheme.errorContainer
+    }
+
+    val textColor = when (message.sender) {
+        Sender.USER -> MaterialTheme.colorScheme.onPrimaryContainer
+        Sender.AGENT -> MaterialTheme.colorScheme.onSecondaryContainer
+        Sender.ERROR -> MaterialTheme.colorScheme.onErrorContainer
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = horizontalAlignment
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.8f) // Max 80% width
+                .background(backgroundColor, RoundedCornerShape(12.dp))
+        ) {
+            Text(
+                text = message.text,
+                color = textColor,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+    }
+}
+
+/**
+ * The bottom bar with the text field and send button.
+ * It also displays the agent's current status.
+ */
+@Composable
+fun ChatInputBar(
+    status: AgentStatus,
+    onSend: (String) -> Unit
+) {
+    var inputText by remember { mutableStateOf("") }
+    val isEnabled = status is AgentStatus.Idle
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(16.dp)
+    ) {
+        // --- STATUS INDICATOR ---
+        // This box shows the "Thinking..." or "Waiting..." message
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(24.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            when (status) {
+                is AgentStatus.Loading -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                is AgentStatus.RequiresPermission -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                is AgentStatus.Idle -> {
+                    // Show nothing when idle
+                }
+            }
+        }
+        // --- END STATUS ---
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // --- INPUT ROW ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = { inputText = it },
+                label = { Text("Your command...") },
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                singleLine = true,
+                enabled = isEnabled
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Button(
+                onClick = {
+                    onSend(inputText)
+                    inputText = ""
+                },
+                enabled = isEnabled && inputText.isNotBlank(),
+                modifier = Modifier.height(56.dp)
+            ) {
+                Text("Send")
+            }
+        }
+    }
+}
+
+
 @Composable
 fun PermissionDeniedScreen(onRequestPermission: () -> Unit) {
-    // ... (existing code, no changes) ...
     Box(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         contentAlignment = Alignment.Center
@@ -150,115 +336,6 @@ fun PermissionDeniedScreen(onRequestPermission: () -> Unit) {
             Spacer(modifier = Modifier.height(24.dp))
             Button(onClick = onRequestPermission) {
                 Text("Grant Permission")
-            }
-        }
-    }
-}
-
-
-@Composable
-fun AgentScreen(
-    viewModel: AgentViewModel,
-    // Generalized callback
-    onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
-) {
-    val uiState by viewModel.uiState.collectAsState()
-
-    LaunchedEffect(uiState) {
-        val state = uiState
-        if (state is AgentUiState.RequiresPermission) {
-            // The ViewModel is telling us to launch a permission request.
-            // We pass *both* the intent and the type.
-            Log.d("AgentScreen", "Detected RequiresPermission state: ${state.type}")
-            onLaunchPermissionRequest(state.intentSender, state.type)
-        }
-    }
-
-    var inputText by remember { mutableStateOf("") }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.Bottom
-    ) {
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                .padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            when (val state = uiState) {
-                is AgentUiState.Idle -> {
-                    Text("Ask your gallery agent to do something...",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                is AgentUiState.Loading -> {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(state.message,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                is AgentUiState.AgentMessage -> {
-                    Text(state.message,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                is AgentUiState.Error -> {
-                    Text(state.error,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.error)
-                }
-                is AgentUiState.RequiresPermission -> {
-                    // This UI now uses the dynamic message from the state
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            state.message,
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
-                label = { Text("Your command...") },
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                singleLine = true
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            Button(
-                onClick = {
-                    viewModel.sendUserInput(inputText)
-                    inputText = ""
-                },
-                enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.RequiresPermission,
-                modifier = Modifier.height(56.dp)
-            ) {
-                Text("Send")
             }
         }
     }
