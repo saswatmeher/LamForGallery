@@ -24,12 +24,14 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -90,6 +92,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         checkAndRequestPermission()
+
+        lifecycleScope.launch {
+            agentViewModel.galleryDidChange.collect {
+                Log.d(TAG, "Agent reported gallery change. Refreshing Photos and Albums.")
+                photosViewModel.loadPhotos() // Refresh photos
+                albumsViewModel.loadAlbums() // Refresh albums
+            }
+        }
 
         setContent {
             MaterialTheme {

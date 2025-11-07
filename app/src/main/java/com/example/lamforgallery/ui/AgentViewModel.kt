@@ -15,8 +15,11 @@ import com.example.lamforgallery.network.AgentApiService
 import com.example.lamforgallery.network.NetworkModule
 import com.example.lamforgallery.tools.GalleryTools
 import com.google.gson.Gson
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -89,6 +92,9 @@ class AgentViewModel(
 
     private val _uiState = MutableStateFlow(AgentUiState())
     val uiState: StateFlow<AgentUiState> = _uiState.asStateFlow()
+
+    private val _galleryDidChange = MutableSharedFlow<Unit>()
+    val galleryDidChange: SharedFlow<Unit> = _galleryDidChange.asSharedFlow()
 
     /**
      * Called by the UI when a user taps an image *in the chat bubble*.
@@ -202,6 +208,7 @@ class AgentViewModel(
             when (type) {
                 PermissionType.DELETE -> {
                     sendToolResult(gson.toJson(true), toolCallId)
+                    _galleryDidChange.emit(Unit)
                 }
                 PermissionType.WRITE -> {
                     if (args == null) {
@@ -215,6 +222,7 @@ class AgentViewModel(
                     val album = args["album_name"] as? String ?: "New Album"
                     val moveResult = galleryTools.performMoveOperation(uris, album)
                     sendToolResult(gson.toJson(moveResult), toolCallId)
+                    _galleryDidChange.emit(Unit)
                 }
             }
         }
@@ -340,7 +348,7 @@ class AgentViewModel(
                     val message = "I've created the collage '$title' for you."
                     val imageList = if (newCollageUri != null) listOf(newCollageUri) else null
                     addMessage(ChatMessage(text = message, sender= Sender.AGENT, imageUris = imageList))
-
+                    viewModelScope.launch { _galleryDidChange.emit(Unit) }
                     newCollageUri
                 }
 
@@ -372,6 +380,9 @@ class AgentViewModel(
                             imageUris = newImageUris, // Store URIs in the message
                             hasSelectionPrompt = true
                         ))
+                    }
+                    if (newImageUris.isNotEmpty()) {
+                        viewModelScope.launch { _galleryDidChange.emit(Unit) }
                     }
                     newImageUris
                 }
