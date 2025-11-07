@@ -20,9 +20,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,113 +30,120 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.flow.distinctUntilChanged
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 
-// --- Constants ---
-private const val PAGE_SIZE = 60 // Load 60 photos at a time
+private const val ALBUM_PAGE_SIZE = 60
 
 // --- State ---
-data class PhotosScreenState(
+data class AlbumDetailState(
     val photos: List<String> = emptyList(),
     val isLoading: Boolean = false,
-    val canLoadMore: Boolean = true, // Becomes false when we've loaded all photos
-    val page: Int = 0
+    val canLoadMore: Boolean = true,
+    val page: Int = 0,
+    val albumName: String = ""
 )
 
 // --- ViewModel ---
-class PhotosViewModel(
+class AlbumDetailViewModel(
     private val galleryTools: GalleryTools
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(PhotosScreenState())
-    val uiState: StateFlow<PhotosScreenState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow(AlbumDetailState())
+    val uiState: StateFlow<AlbumDetailState> = _uiState.asStateFlow()
 
-    private val TAG = "PhotosViewModel"
+    private val TAG = "AlbumDetailViewModel"
 
-    init {
-        // We will load photos from MainActivity *after*
-        // permission is confirmed.
-        // loadPhotos() // <-- DELETE OR COMMENT OUT THIS LINE
-    }
+    fun loadAlbum(name: String) {
+        // Decode the album name (in case it has spaces like "My Cats")
+        val decodedName = try {
+            URLDecoder.decode(name, StandardCharsets.UTF_8.name())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode album name", e)
+            name
+        }
 
-    /**
-     * Resets and loads the first page of photos.
-     */
-    fun loadPhotos() {
-        // Reset state for a fresh load
-        _uiState.value = PhotosScreenState()
+        _uiState.value = AlbumDetailState(albumName = decodedName)
         loadNextPage()
     }
 
-    /**
-     * Loads the next page of photos.
-     */
     fun loadNextPage() {
         val currentState = _uiState.value
-        // Prevent multiple loads at once, or loading if we're at the end
-        if (currentState.isLoading || !currentState.canLoadMore) {
+        if (currentState.isLoading || !currentState.canLoadMore || currentState.albumName.isEmpty()) {
             return
         }
 
-        Log.d(TAG, "Loading next page, current page: ${currentState.page}")
+        Log.d(TAG, "Loading next page for ${currentState.albumName}")
 
         viewModelScope.launch {
-            // 1. Set loading state
             _uiState.update { it.copy(isLoading = true) }
 
-            // 2. Fetch photos for the current page
             val newPhotos = try {
-                galleryTools.getPhotos(page = currentState.page, pageSize = PAGE_SIZE)
+                galleryTools.getPhotosForAlbum(
+                    albumName = currentState.albumName,
+                    page = currentState.page,
+                    pageSize = ALBUM_PAGE_SIZE
+                )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load photos", e)
+                Log.e(TAG, "Failed to load photos for album", e)
                 emptyList<String>()
             }
 
-            // 3. Update state with new photos
             _uiState.update {
                 it.copy(
                     isLoading = false,
-                    photos = it.photos + newPhotos, // Append new photos
+                    photos = it.photos + newPhotos,
                     page = it.page + 1,
-                    canLoadMore = newPhotos.isNotEmpty() // If we got no photos, we're at the end
+                    canLoadMore = newPhotos.isNotEmpty()
                 )
             }
-            Log.d(TAG, "Page ${currentState.page} loaded, new total: ${uiState.value.photos.size}")
         }
     }
 }
 
 // --- Composable UI ---
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhotosScreen(viewModel: PhotosViewModel) {
+fun AlbumDetailScreen(
+    albumName: String,
+    viewModel: AlbumDetailViewModel,
+    onNavigateBack: () -> Unit
+) {
+    // Load the album when the screen first appears
+    LaunchedEffect(albumName) {
+        viewModel.loadAlbum(albumName)
+    }
+
     val uiState by viewModel.uiState.collectAsState()
     val gridState = rememberLazyGridState()
 
-    // --- This is the "Infinite Scroll" logic ---
-    // It's a side effect that triggers when the scroll state changes.
+    // Infinite Scroll Logic
     LaunchedEffect(gridState) {
-        // snapshotFlow converts the LazyGridState's layoutInfo into a Flow
         snapshotFlow { gridState.layoutInfo }
-            .distinctUntilChanged() // Only react when the layout *actually* changes
+            .distinctUntilChanged()
             .collect { layoutInfo ->
                 val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull() ?: return@collect
                 val totalItems = layoutInfo.totalItemsCount
 
-                // If the last visible item is close to the end of the list,
-                // and we're not already loading, and there's more to load...
-                if (lastVisibleItem.index >= totalItems - (PAGE_SIZE / 2) && // Load when we're halfway through the last page
+                if (lastVisibleItem.index >= totalItems - (ALBUM_PAGE_SIZE / 2) &&
                     !uiState.isLoading &&
                     uiState.canLoadMore
                 ) {
-                    // ...then load the next page.
                     viewModel.loadNextPage()
                 }
             }
     }
-    // --- End Infinite Scroll Logic ---
 
     Scaffold(
         topBar = {
-            // (You can add a TopAppBar here if you want)
+            TopAppBar(
+                title = { Text(uiState.albumName) },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
         }
     ) { paddingValues ->
         Box(
@@ -146,13 +153,12 @@ fun PhotosScreen(viewModel: PhotosViewModel) {
             contentAlignment = Alignment.Center
         ) {
             if (uiState.photos.isEmpty() && uiState.isLoading) {
-                // Show a loading spinner only on the *initial* load
                 CircularProgressIndicator()
             } else if (uiState.photos.isEmpty() && !uiState.isLoading) {
-                Text("No photos found.")
+                Text("No photos found in this album.")
             } else {
                 LazyVerticalGrid(
-                    state = gridState, // Attach the grid state
+                    state = gridState,
                     columns = GridCells.Adaptive(minSize = 120.dp),
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -161,7 +167,7 @@ fun PhotosScreen(viewModel: PhotosViewModel) {
                     items(uiState.photos, key = { it }) { photoUri ->
                         AsyncImage(
                             model = photoUri,
-                            contentDescription = "Gallery Photo",
+                            contentDescription = "Album Photo",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .aspectRatio(1f)
@@ -170,7 +176,6 @@ fun PhotosScreen(viewModel: PhotosViewModel) {
                     }
 
                     if (uiState.isLoading && uiState.photos.isNotEmpty()) {
-                        // Show a small spinner at the *bottom* when loading more pages
                         item {
                             Box(
                                 modifier = Modifier

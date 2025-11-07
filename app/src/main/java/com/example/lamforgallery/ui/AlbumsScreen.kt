@@ -3,6 +3,7 @@ package com.example.lamforgallery.ui
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.lamforgallery.tools.GalleryTools
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,7 +27,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.example.lamforgallery.tools.GalleryTools
+import androidx.compose.foundation.clickable // --- NEW IMPORT ---
+import java.net.URLEncoder // --- NEW IMPORT ---
+import java.nio.charset.StandardCharsets // --- NEW IMPORT ---
 
 // 1. --- The ViewModel for this screen ---
 
@@ -69,7 +72,8 @@ class AlbumsViewModel(
 
 @Composable
 fun AlbumsScreen(
-    viewModel: AlbumsViewModel
+    viewModel: AlbumsViewModel,
+    onAlbumClick: (String) -> Unit // <-- ADD THIS PARAMETER
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -81,17 +85,28 @@ fun AlbumsScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(uiState.albums, key = { it.name }) { album ->
-            AlbumItem(album = album)
+            AlbumItem(
+                album = album,
+                onClick = {
+                    // We must URL-encode the album name in case it has spaces
+                    val encodedName = URLEncoder.encode(album.name, StandardCharsets.UTF_8.name())
+                    onAlbumClick(encodedName)
+                }
+            )
         }
     }
 }
 
 @Composable
-fun AlbumItem(album: GalleryTools.Album) {
+fun AlbumItem(
+    album: GalleryTools.Album,
+    onClick: () -> Unit // <-- ADD THIS PARAMETER
+) {
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick) // <-- ADD THIS MODIFIER
     ) {
         // Cover Image
         AsyncImage(

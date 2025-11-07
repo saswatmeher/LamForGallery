@@ -52,6 +52,12 @@ class ViewModelFactory(
                 AlbumsViewModel(galleryTools) as T
             }
 
+            // --- ADD THIS NEW CASE ---
+            modelClass.isAssignableFrom(AlbumDetailViewModel::class.java) -> {
+                AlbumDetailViewModel(galleryTools) as T
+            }
+            // --- END NEW CASE ---
+
             else -> {
                 throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
             }

@@ -308,6 +308,44 @@ class GalleryTools(private val resolver: ContentResolver) {
         }
     }
 
+    // --- NEW FUNCTION TO ADD ---
+    /**
+     * Fetches all photos *for a specific album*, with pagination.
+     */
+    suspend fun getPhotosForAlbum(albumName: String, page: Int, pageSize: Int): List<String> {
+        Log.d(TAG, "Fetching photos for album: $albumName, page: $page")
+        val photoUris = mutableListOf<String>()
+        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val projection = arrayOf(MediaStore.Images.Media._ID)
+
+        // --- This is the main difference ---
+        val selection = "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ?"
+        val selectionArgs = arrayOf(albumName)
+        // --- End difference ---
+
+        val queryArgs = Bundle().apply {
+            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.Images.Media.DATE_TAKEN} DESC")
+            putInt(ContentResolver.QUERY_ARG_LIMIT, pageSize)
+            putInt(ContentResolver.QUERY_ARG_OFFSET, page * pageSize)
+        }
+
+        return withContext(Dispatchers.IO) {
+            resolver.query(collection, projection, queryArgs, null)?.use { cursor ->
+                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idColumn)
+                    val uri = ContentUris.withAppendedId(collection, id)
+                    photoUris.add(uri.toString())
+                }
+            }
+            Log.d(TAG, "Found ${photoUris.size} photos for $albumName")
+            photoUris
+        }
+    }
+    // --- END NEW FUNCTION ---
+
     // --- PRIVATE HELPER FUNCTIONS ---
 
     private enum class FilterType { GRAYSCALE, SEPIA }

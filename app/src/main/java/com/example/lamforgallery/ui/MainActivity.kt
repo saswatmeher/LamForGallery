@@ -14,34 +14,37 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-// --- CHANGE THESE IMPORTS ---
-import androidx.compose.material.icons.filled.ChatBubble // Using a default icon is easier
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PhotoAlbum
-// --- END IMPORTS ---
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable // <-- NEW IMPORT
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 
-/**
- * This is now the main entry point, responsible for:
- * 1. Handling all permissions.
- * 2. Initializing all ViewModels.
- * 3. Hosting the Bottom Navigation Bar.
- * 4. Switching between the three main screens.
- */
 class MainActivity : ComponentActivity() {
 
     private val TAG = "MainActivity"
 
-    // --- Unified ViewModel Factory ---
+    // --- Factory ---
     private val factory by lazy { ViewModelFactory(application) }
 
-    // --- Initialize all 3 ViewModels ---
+    // --- ViewModels (Activity-Scoped) ---
+    // These are the *single source of truth*.
+    // We will pass these down to our Composables.
     private val agentViewModel: AgentViewModel by viewModels { factory }
     private val photosViewModel: PhotosViewModel by viewModels { factory }
     private val albumsViewModel: AlbumsViewModel by viewModels { factory }
+    // --- End ViewModels ---
 
     // --- READ PERMISSION ---
     private val permissionToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -56,15 +59,14 @@ class MainActivity : ComponentActivity() {
         ) { isGranted: Boolean ->
             isPermissionGranted = isGranted
             if (isGranted) {
-                // Load content *after* permission is granted
-                photosViewModel.loadPhotos()
-                albumsViewModel.loadAlbums()
+                Log.d(TAG, "Permission granted. Loading ViewModels.")
+                loadAllViewModels()
             }
         }
     // --- END READ PERMISSION ---
 
 
-    // --- MODIFY PERMISSIONS (DELETE/MOVE) ---
+    // --- MODIFY PERMISSIONS (GENERALIZED) ---
     private var currentPermissionType: PermissionType? = null
     private val permissionRequestLauncher =
         registerForActivityResult(
@@ -78,7 +80,7 @@ class MainActivity : ComponentActivity() {
 
             val wasSuccessful = activityResult.resultCode == RESULT_OK
             Log.d(TAG, "Permission result for $type: ${if (wasSuccessful) "GRANTED" else "DENIED"}")
-            agentViewModel.onPermissionResult(wasSuccessful, type)
+            agentViewModel.onPermissionResult(wasSuccessful, type) // Pass to Agent VM
             currentPermissionType = null
         }
     // --- END MODIFY PERMISSIONS ---
@@ -96,11 +98,14 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     if (isPermissionGranted) {
-                        // --- Show the main App Shell ---
-                        AppShell(
+                        // --- Show the main App Navigation Host ---
+                        AppNavigationHost(
+                            factory = factory,
+                            // --- PASS THE VIEWMODELS DOWN ---
                             agentViewModel = agentViewModel,
                             photosViewModel = photosViewModel,
                             albumsViewModel = albumsViewModel,
+                            // --- END PASS ---
                             onLaunchPermissionRequest = { intentSender, type ->
                                 Log.d(TAG, "Launching permissionRequestLauncher for $type...")
                                 currentPermissionType = type
@@ -110,8 +115,6 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     } else {
-                        // --- Show the permission rationale screen ---
-                        // (This composable is now in AgentScreen.kt)
                         PermissionDeniedScreen {
                             requestPermissionLauncher.launch(permissionToRequest)
                         }
@@ -129,20 +132,90 @@ class MainActivity : ComponentActivity() {
             ) == PackageManager.PERMISSION_GRANTED -> {
                 Log.d(TAG, "Permission already granted.")
                 isPermissionGranted = true
-
-                // --- THIS IS THE FIX ---
-                // We have permission, so load the content now.
-                photosViewModel.loadPhotos()
-                albumsViewModel.loadAlbums()
+                // --- THIS IS THE FIX for blank photos ---
+                loadAllViewModels()
                 // --- END FIX ---
             }
-            // You can add a rationale check here if needed
+            shouldShowRequestPermissionRationale(permissionToRequest) -> {
+                requestPermissionLauncher.launch(permissionToRequest)
+            }
             else -> {
                 requestPermissionLauncher.launch(permissionToRequest)
             }
         }
     }
+
+    /**
+     * Helper to load data into all main ViewModels.
+     */
+    private fun loadAllViewModels() {
+        photosViewModel.loadPhotos()
+        albumsViewModel.loadAlbums()
+        // AgentViewModel loads on its own, no need to call it here.
+    }
 }
+
+
+/**
+ * Sets up the app's navigation graph.
+ */
+@Composable
+fun AppNavigationHost(
+    factory: ViewModelProvider.Factory,
+    // --- RECEIVE THE VIEWMODELS ---
+    agentViewModel: AgentViewModel,
+    photosViewModel: PhotosViewModel,
+    albumsViewModel: AlbumsViewModel,
+    // --- END RECEIVE ---
+    onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
+) {
+    val navController = rememberNavController()
+
+    // --- FIX 1: HOIST THE SELECTED TAB STATE ---
+    // We use rememberSaveable to remember the tab even if the app rotates
+    // or navigates away.
+    var selectedTab by rememberSaveable { mutableStateOf("photos") }
+    // --- END FIX 1 ---
+
+    NavHost(navController = navController, startDestination = "main") {
+
+        // Route 1: The main 3-tab screen
+        composable("main") {
+            AppShell(
+                // Pass ViewModels down
+                agentViewModel = agentViewModel,
+                photosViewModel = photosViewModel,
+                albumsViewModel = albumsViewModel,
+                // Pass tab state down
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+                // Pass navigation/permission helpers down
+                onAlbumClick = { encodedAlbumName ->
+                    navController.navigate("album_detail/$encodedAlbumName")
+                },
+                onLaunchPermissionRequest = onLaunchPermissionRequest
+            )
+        }
+
+        // Route 2: The Album Detail screen
+        composable(
+            route = "album_detail/{albumName}",
+            arguments = listOf(navArgument("albumName") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val albumName = backStackEntry.arguments?.getString("albumName") ?: "Unknown"
+
+            // This ViewModel is temporary, so we create it here.
+            val albumDetailViewModel: AlbumDetailViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
+
+            AlbumDetailScreen(
+                albumName = albumName,
+                viewModel = albumDetailViewModel,
+                onNavigateBack = { navController.popBackStack() } // Standard back action
+            )
+        }
+    }
+}
+
 
 /**
  * The main app shell, containing the Bottom Navigation and the
@@ -151,56 +224,50 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppShell(
+    // --- RECEIVE VIEWMODELS AND STATE ---
     agentViewModel: AgentViewModel,
     photosViewModel: PhotosViewModel,
     albumsViewModel: AlbumsViewModel,
+    selectedTab: String,
+    onTabSelected: (String) -> Unit,
+    onAlbumClick: (String) -> Unit,
+    // --- END RECEIVE ---
     onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
 ) {
-    // State to track the selected tab
-    var selectedTab by remember { mutableStateOf("photos") }
+    // Note: We no longer create ViewModels here! We use the ones passed in.
 
     Scaffold(
         bottomBar = {
             NavigationBar {
-                // --- Photos Tab ---
                 NavigationBarItem(
-                    icon = { Icon(Icons.Default.Photo, contentDescription = "Photos") }, // This is in Default
-                    label = { Text("Photos") },
                     selected = selectedTab == "photos",
-                    onClick = { selectedTab = "photos" }
+                    onClick = { onTabSelected("photos") }, // Use the lambda
+                    icon = { Icon(Icons.Default.Photo, contentDescription = "Photos") },
+                    label = { Text("Photos") }
                 )
-
-                // --- Albums Tab ---
                 NavigationBarItem(
-                    icon = { Icon(Icons.Default.PhotoAlbum, contentDescription = "Albums") }, // This is in Default
-                    label = { Text("Albums") },
                     selected = selectedTab == "albums",
-                    onClick = { selectedTab = "albums" }
+                    onClick = { onTabSelected("albums") }, // Use the lambda
+                    icon = { Icon(Icons.Default.PhotoAlbum, contentDescription = "Albums") },
+                    label = { Text("Albums") }
                 )
-
-                // --- Agent Tab ---
                 NavigationBarItem(
-                    // --- THIS IS THE FIX ---
-                    // 'Chat' is not in Default. 'ChatBubble' is.
-                    icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Agent") },
-                    // --- END FIX ---
-                    label = { Text("Agent") },
                     selected = selectedTab == "agent",
-                    onClick = { selectedTab = "agent" }
+                    onClick = { onTabSelected("agent") }, // Use the lambda
+                    icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Agent") },
+                    label = { Text("Agent") }
                 )
             }
         }
     ) { paddingValues ->
-        // This is the main content area
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues) // Apply padding from the Scaffold
-        ) {
-            // Switch the screen based on the selected tab
+        Box(modifier = Modifier.padding(paddingValues)) {
+            // Switch content based on the selected tab
             when (selectedTab) {
                 "photos" -> PhotosScreen(viewModel = photosViewModel)
-                "albums" -> AlbumsScreen(viewModel = albumsViewModel)
+                "albums" -> AlbumsScreen(
+                    viewModel = albumsViewModel,
+                    onAlbumClick = onAlbumClick // Pass the navigation click
+                )
                 "agent" -> AgentScreen(
                     viewModel = agentViewModel,
                     onLaunchPermissionRequest = onLaunchPermissionRequest
