@@ -8,12 +8,17 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,8 +34,10 @@ import kotlinx.coroutines.launch
 
 /**
  * This file now contains our entire Chat UI, decoupled from MainActivity.
+ * NEW: It now includes the ModalBottomSheet for photo selection.
  */
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentScreen(
     viewModel: AgentViewModel,
@@ -39,6 +46,37 @@ fun AgentScreen(
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+
+    // --- Bottom Sheet State ---
+    // We use a separate state for the sheet to show/hide it
+    val sheetState = rememberModalBottomSheetState()
+
+    // This is the "controller" for the sheet.
+    // When the VM state `isSelectionSheetOpen` changes to true, we `show()` the sheet.
+    // When the user dismisses it, `onDismissRequest` tells the VM to set it back to false.
+    if (uiState.isSelectionSheetOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.closeSelectionSheet() },
+            sheetState = sheetState
+        ) {
+            // This is the content *inside* the sheet
+            SelectionBottomSheet(
+                uris = uiState.selectionSheetUris,
+                onCancel = {
+                    coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                        viewModel.closeSelectionSheet()
+                    }
+                },
+                onConfirm = { selection ->
+                    coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
+                        viewModel.confirmSelection(selection)
+                    }
+                }
+            )
+        }
+    }
+    // --- End Bottom Sheet ---
+
 
     // This effect will watch for a new RequiresPermission state
     LaunchedEffect(uiState.currentStatus) {
@@ -88,7 +126,11 @@ fun AgentScreen(
                 ChatMessageItem(
                     message = message,
                     isSelected = { uri -> uiState.selectedImageUris.contains(uri) },
-                    onToggleSelection = { uri -> viewModel.toggleImageSelection(uri) }
+                    onToggleSelection = { uri -> viewModel.toggleImageSelection(uri) },
+                    // --- NEW: Pass the sheet-opening function ---
+                    onOpenSelectionSheet = { uris ->
+                        viewModel.openSelectionSheet(uris)
+                    }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
             }
@@ -110,7 +152,8 @@ fun AgentScreen(
 fun ChatMessageItem(
     message: ChatMessage,
     isSelected: (String) -> Boolean,
-    onToggleSelection: (String) -> Unit
+    onToggleSelection: (String) -> Unit,
+    onOpenSelectionSheet: (List<String>) -> Unit // <-- NEW
 ) {
     val horizontalAlignment = when (message.sender) {
         Sender.USER -> Alignment.End
@@ -133,93 +176,200 @@ fun ChatMessageItem(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = horizontalAlignment
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.8f) // Max 80% width
+        // --- MODIFIED: The chat bubble is now clickable if it's a prompt ---
+        val bubbleModifier = if (message.hasSelectionPrompt) {
+            Modifier
+                .fillMaxWidth(0.8f)
                 .background(backgroundColor, RoundedCornerShape(12.dp))
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) { // Wrap in Column to stack text and images
+                .clickable {
+                    // This is the new logic:
+                    // When tapped, open the selection sheet with this message's URIs
+                    onOpenSelectionSheet(message.imageUris ?: emptyList())
+                }
+        } else {
+            Modifier
+                .fillMaxWidth(0.8f)
+                .background(backgroundColor, RoundedCornerShape(12.dp))
+        }
+
+        Box(modifier = bubbleModifier) {
+            Column(modifier = Modifier.padding(12.dp)) {
                 Text(
                     text = message.text,
                     color = textColor,
                     style = MaterialTheme.typography.bodyLarge,
                 )
 
-                // --- IMAGE DISPLAY LOGIC ---
-                message.imageUris?.let { uris ->
-                    if (uris.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                // --- MODIFIED IMAGE DISPLAY LOGIC ---
+                // We only show the LazyRow carousel if it's *NOT* a selection prompt
+                // (e.g., for a collage or filter result)
+                if (message.imageUris != null && !message.hasSelectionPrompt) {
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                        // Use a horizontal row for multiple images, or a single image view
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            uris.take(4).forEach { uri -> // Show up to 4 images
-                                val isSelected = isSelected(uri)
-                                Box(
-                                    modifier = Modifier
-                                        .size(90.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { onToggleSelection(uri) } // <-- MAKE IT CLICKABLE
-                                        .then(
-                                            if (isSelected) Modifier.border( // <-- SHOW BORDER
-                                                BorderStroke(3.dp, MaterialTheme.colorScheme.primary),
-                                                RoundedCornerShape(8.dp)
-                                            ) else Modifier
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(message.imageUris) { uri ->
+                            val isSelected = isSelected(uri)
+                            Box(
+                                modifier = Modifier
+                                    .size(90.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onToggleSelection(uri) }
+                                    .then(
+                                        if (isSelected) Modifier.border(
+                                            BorderStroke(3.dp, MaterialTheme.colorScheme.primary),
+                                            RoundedCornerShape(8.dp)
+                                        ) else Modifier
+                                    )
+                            ) {
+                                AsyncImage(
+                                    model = uri,
+                                    contentDescription = "Image from agent",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                if (isSelected) {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(4.dp)
+                                            .align(Alignment.TopEnd)
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Check,
+                                            contentDescription = "Selected",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(14.dp)
                                         )
-                                ) {
-                                    AsyncImage(
-                                        model = uri,
-                                        contentDescription = "Image from agent",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                    if (isSelected) {
-                                        // --- SHOW CHECKMARK ---
-                                        Box(
-                                            modifier = Modifier
-                                                .padding(4.dp)
-                                                .align(Alignment.TopEnd)
-                                                .size(20.dp)
-                                                .clip(CircleShape)
-                                                .background(MaterialTheme.colorScheme.primary),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = "Selected",
-                                                tint = MaterialTheme.colorScheme.onPrimary,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                        }
                                     }
-                                }
-                            }
-                            if (uris.size > 4) {
-                                // Add a simple indicator if there are more images
-                                Box(
-                                    modifier = Modifier
-                                        .size(90.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "+${uris.size - 4}",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
                                 }
                             }
                         }
                     }
                 }
-                // --- END IMAGE DISPLAY LOGIC ---
+                // --- END MODIFIED IMAGE DISPLAY LOGIC ---
             }
         }
     }
 }
+
+
+// --- NEW COMPOSABLE FOR THE BOTTOM SHEET CONTENT ---
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SelectionBottomSheet(
+    uris: List<String>,
+    onCancel: () -> Unit,
+    onConfirm: (Set<String>) -> Unit
+) {
+    // This sheet manages its *own* temporary selection
+    var localSelection by remember { mutableStateOf(emptySet<String>()) }
+
+    val selectionCount = localSelection.size
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Select Photos") },
+                navigationIcon = {
+                    IconButton(onClick = onCancel) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            BottomAppBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                Spacer(modifier = Modifier.weight(1f))
+                Button(
+                    onClick = { onConfirm(localSelection) },
+                    enabled = selectionCount > 0
+                ) {
+                    Text("Confirm ($selectionCount)")
+                }
+                Spacer(modifier = Modifier.weight(1f))
+            }
+        }
+    ) { paddingValues ->
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 100.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(uris, key = { it }) { uri ->
+                SelectablePhotoItem(
+                    uri = uri,
+                    isSelected = localSelection.contains(uri),
+                    onToggle = {
+                        localSelection = localSelection.toMutableSet().apply {
+                            if (contains(uri)) remove(uri) else add(uri)
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SelectablePhotoItem(
+    uri: String,
+    isSelected: Boolean,
+    onToggle: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onToggle() }
+            .then(
+                if (isSelected) Modifier.border(
+                    BorderStroke(4.dp, MaterialTheme.colorScheme.primary),
+                    RoundedCornerShape(8.dp)
+                ) else Modifier
+            )
+    ) {
+        AsyncImage(
+            model = uri,
+            contentDescription = "Selectable photo",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .padding(8.dp)
+                    .align(Alignment.TopEnd)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = "Selected",
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+// --- END NEW COMPOSABLES ---
+
 
 /**
  * The bottom bar with the text field and send button.
