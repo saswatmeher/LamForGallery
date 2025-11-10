@@ -111,6 +111,8 @@ class AgentViewModel(
         }
     }
 
+
+
     // --- FUNCTIONS FOR BOTTOM SHEET ---
 
     /**
@@ -298,7 +300,7 @@ class AgentViewModel(
                             hasSelectionPrompt = true
                         ))
                     }
-                    uris
+                    mapOf("photos_found" to uris.size)
                 }
                 "delete_photos" -> {
                     val uris = getUrisFromArgsOrSelection(toolCall.args["photo_uris"])
