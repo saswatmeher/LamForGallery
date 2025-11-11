@@ -6,6 +6,9 @@ import androidx.lifecycle.ViewModelProvider
 import com.example.lamforgallery.network.AgentApiService
 import com.example.lamforgallery.network.NetworkModule
 import com.example.lamforgallery.tools.GalleryTools
+import com.example.lamforgallery.database.AppDatabase
+import com.example.lamforgallery.database.ImageEmbeddingDao
+import com.example.lamforgallery.ml.ImageEncoder
 import com.google.gson.Gson
 
 /**
@@ -30,6 +33,18 @@ class ViewModelFactory(
 
     private val agentApi: AgentApiService by lazy {
         NetworkModule.apiService
+    }
+
+    private val appDatabase: AppDatabase by lazy {
+        AppDatabase.getDatabase(application)
+    }
+
+    private val imageEmbeddingDao: ImageEmbeddingDao by lazy {
+        appDatabase.imageEmbeddingDao()
+    }
+
+    private val imageEncoder: ImageEncoder by lazy {
+        ImageEncoder(application)
     }
 
     // --- End Dependencies ---
@@ -57,6 +72,9 @@ class ViewModelFactory(
                 AlbumDetailViewModel(galleryTools) as T
             }
             // --- END NEW CASE ---
+            modelClass.isAssignableFrom(EmbeddingViewModel::class.java) -> {
+                EmbeddingViewModel(application, imageEmbeddingDao, imageEncoder) as T
+            }
 
             else -> {
                 throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

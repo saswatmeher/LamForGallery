@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.ImageSearch // --- ADDED ---
 import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,6 +40,8 @@ import android.graphics.Bitmap // <-- Import Bitmap
 import android.graphics.Color // <-- Import Color
 import com.example.lamforgallery.database.AppDatabase
 import com.example.lamforgallery.database.ImageEmbedding
+import com.example.lamforgallery.ui.EmbeddingScreen
+import com.example.lamforgallery.ui.EmbeddingViewModel
 
 class MainActivity : ComponentActivity() {
 
@@ -54,7 +57,7 @@ class MainActivity : ComponentActivity() {
     private val photosViewModel: PhotosViewModel by viewModels { factory }
     private val albumsViewModel: AlbumsViewModel by viewModels { factory }
     // --- End ViewModels ---
-
+    val embeddingViewModel: EmbeddingViewModel by viewModels { factory }
     // --- READ PERMISSION ---
     private val permissionToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_IMAGES
@@ -123,6 +126,7 @@ class MainActivity : ComponentActivity() {
                             agentViewModel = agentViewModel,
                             photosViewModel = photosViewModel,
                             albumsViewModel = albumsViewModel,
+                            embeddingViewModel = embeddingViewModel,
                             // --- END PASS ---
                             onLaunchPermissionRequest = { intentSender, type ->
                                 Log.d(TAG, "Launching permissionRequestLauncher for $type...")
@@ -184,6 +188,7 @@ fun AppNavigationHost(
     agentViewModel: AgentViewModel,
     photosViewModel: PhotosViewModel,
     albumsViewModel: AlbumsViewModel,
+    embeddingViewModel: EmbeddingViewModel,
     // --- END RECEIVE ---
     onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
 ) {
@@ -204,6 +209,7 @@ fun AppNavigationHost(
                 agentViewModel = agentViewModel,
                 photosViewModel = photosViewModel,
                 albumsViewModel = albumsViewModel,
+                embeddingViewModel = embeddingViewModel,
                 // Pass tab state down
                 selectedTab = selectedTab,
                 onTabSelected = { selectedTab = it },
@@ -246,6 +252,7 @@ fun AppShell(
     agentViewModel: AgentViewModel,
     photosViewModel: PhotosViewModel,
     albumsViewModel: AlbumsViewModel,
+    embeddingViewModel: EmbeddingViewModel,
     selectedTab: String,
     onTabSelected: (String) -> Unit,
     onAlbumClick: (String) -> Unit,
@@ -275,6 +282,12 @@ fun AppShell(
                     icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Agent") },
                     label = { Text("Agent") }
                 )
+                NavigationBarItem(
+                    selected = selectedTab == "indexing",
+                    onClick = { onTabSelected("indexing") },
+                    icon = { Icon(Icons.Default.ImageSearch, contentDescription = "Indexing") },
+                    label = { Text("Indexing") }
+                )
             }
         }
     ) { paddingValues ->
@@ -290,6 +303,7 @@ fun AppShell(
                     viewModel = agentViewModel,
                     onLaunchPermissionRequest = onLaunchPermissionRequest
                 )
+                "indexing" -> EmbeddingScreen(viewModel = embeddingViewModel)
             }
         }
     }

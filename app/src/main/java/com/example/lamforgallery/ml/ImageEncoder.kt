@@ -100,10 +100,29 @@ class ImageEncoder(private val context: Context) { // <-- Made context a private
         // 1. Resize the bitmap to the model's required input size
         val scaledBitmap = Bitmap.createScaledBitmap(bitmap, DIM_IMG_WIDTH, DIM_IMG_HEIGHT, true)
 
-        // 2. Get all pixels from the scaled bitmap
+        // --- START FIX FOR Config#HARDWARE CRASH ---
+        // getPixels() cannot read from a HARDWARE bitmap (which ImageDecoder creates).
+        // We must copy it to a software-readable format (ARGB_8888) first.
+        val readableBitmap = if (scaledBitmap.config == Bitmap.Config.HARDWARE) {
+            scaledBitmap.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            scaledBitmap
+        }
+        // --- END FIX ---
+
+        // 2. Get all pixels from the *readable* scaled bitmap
         val pixelCount = DIM_IMG_WIDTH * DIM_IMG_HEIGHT
         val pixels = IntArray(pixelCount)
-        scaledBitmap.getPixels(pixels, 0, DIM_IMG_WIDTH, 0, 0, DIM_IMG_WIDTH, DIM_IMG_HEIGHT)
+        readableBitmap.getPixels(pixels, 0, DIM_IMG_WIDTH, 0, 0, DIM_IMG_WIDTH, DIM_IMG_HEIGHT)
+
+        // --- Clean up memory ---
+        // Recycle the scaled bitmap that was created
+        scaledBitmap.recycle()
+        // If readableBitmap is a *copy* of scaledBitmap, recycle it too.
+        if (readableBitmap != scaledBitmap) {
+            readableBitmap.recycle()
+        }
+        // --- End clean up ---
 
         // 3. Create the FloatBuffer
         val buffer = FloatBuffer.allocate(TENSOR_SIZE)
