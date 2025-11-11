@@ -8,7 +8,10 @@ import com.example.lamforgallery.network.NetworkModule
 import com.example.lamforgallery.tools.GalleryTools
 import com.example.lamforgallery.database.AppDatabase
 import com.example.lamforgallery.database.ImageEmbeddingDao
+import com.example.lamforgallery.ml.ClipTokenizer
 import com.example.lamforgallery.ml.ImageEncoder
+import com.example.lamforgallery.ml.TextEncoder
+
 import com.google.gson.Gson
 
 /**
@@ -47,6 +50,14 @@ class ViewModelFactory(
         ImageEncoder(application)
     }
 
+    private val clipTokenizer: ClipTokenizer by lazy {
+        ClipTokenizer(application)
+    }
+
+    private val textEncoder: TextEncoder by lazy {
+        TextEncoder(application)
+    }
+
     // --- End Dependencies ---
 
     @Suppress("UNCHECKED_CAST")
@@ -54,7 +65,16 @@ class ViewModelFactory(
         return when {
             // When AgentViewModel is requested...
             modelClass.isAssignableFrom(AgentViewModel::class.java) -> {
-                AgentViewModel(application, agentApi, galleryTools, gson) as T
+                // --- UPDATED CONSTRUCTOR ---
+                AgentViewModel(
+                    application,
+                    agentApi,
+                    galleryTools,
+                    gson,
+                    imageEmbeddingDao, // <-- Pass DAO
+                    clipTokenizer,     // <-- Pass Tokenizer
+                    textEncoder        // <-- Pass Text Encoder
+                ) as T
             }
 
             // When PhotosViewModel is requested...

@@ -14,6 +14,11 @@ import com.example.lamforgallery.data.ToolResult
 import com.example.lamforgallery.network.AgentApiService
 import com.example.lamforgallery.network.NetworkModule
 import com.example.lamforgallery.tools.GalleryTools
+import com.example.lamforgallery.database.ImageEmbeddingDao
+import com.example.lamforgallery.ml.ClipTokenizer
+import com.example.lamforgallery.ml.TextEncoder
+import com.example.lamforgallery.utils.SimilarityUtil
+import com.example.lamforgallery.database.AppDatabase
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +28,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 // --- STATE DEFINITIONS ---
@@ -80,7 +87,10 @@ class AgentViewModel(
     application: Application,
     private val agentApi: AgentApiService,
     private val galleryTools: GalleryTools,
-    private val gson: Gson
+    private val gson: Gson,
+    private val imageEmbeddingDao: ImageEmbeddingDao,
+    private val clipTokenizer: ClipTokenizer,
+    private val textEncoder: TextEncoder
 ) : ViewModel() {
 
     private val TAG = "AgentViewModel"
@@ -95,6 +105,8 @@ class AgentViewModel(
 
     private val _galleryDidChange = MutableSharedFlow<Unit>()
     val galleryDidChange: SharedFlow<Unit> = _galleryDidChange.asSharedFlow()
+
+    private data class SearchResult(val uri: String, val similarity: Float)
 
     /**
      * Called by the UI when a user taps an image *in the chat bubble*.
@@ -196,10 +208,11 @@ class AgentViewModel(
             return
         }
 
-        pendingToolCallId = null
-        pendingToolArgs = null
+
 
         viewModelScope.launch {
+            pendingToolCallId = null
+            pendingToolArgs = null
             if (!wasSuccessful) {
                 Log.w(TAG, "User denied permission for $type")
                 addMessage(ChatMessage(text = "User denied permission.", sender = Sender.ERROR))
@@ -209,6 +222,30 @@ class AgentViewModel(
 
             when (type) {
                 PermissionType.DELETE -> {
+                    // --- START FIX ---
+                    if (args == null) {
+                        Log.e(TAG, "Delete permission granted but no pending args!")
+                        addMessage(ChatMessage(text = "Error: Missing context for delete operation.", sender = Sender.ERROR))
+                        sendToolResult(gson.toJson(false), toolCallId)
+                        return@launch
+                    }
+
+                    val uris = args["photo_uris"] as? List<String> ?: emptyList()
+
+                    // Delete from database in the background
+                    withContext(Dispatchers.IO) {
+                        try {
+                            uris.forEach { uri ->
+                                imageEmbeddingDao.deleteByUri(uri)
+                            }
+                            Log.d(TAG, "Deleted ${uris.size} embeddings from database.")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to delete embeddings from DB", e)
+                            // Don't block the agent, just log the error
+                        }
+                    }
+                    // --- END FIX ---
+
                     sendToolResult(gson.toJson(true), toolCallId)
                     _galleryDidChange.emit(Unit)
                 }
@@ -280,27 +317,75 @@ class AgentViewModel(
             when (toolCall.name) {
                 "search_photos" -> {
                     val query = toolCall.args["query"] as? String ?: ""
-                    val uris = galleryTools.searchPhotos(query)
+                    Log.d(TAG, "Performing SEMANTIC search for: $query")
+
+                    // Run search logic on a background thread
+                    val foundUris = withContext(Dispatchers.IO) {
+                        // 1. Tokenize the text query
+                        val tokens = clipTokenizer.tokenize(query)
+
+                        // 2. Encode the tokens into a text embedding
+                        val textEmbedding = textEncoder.encode(tokens)
+
+                        // 3. Get all image embeddings from the database
+                        // !!! ASSUMPTION: You have a DAO function `getAll()`
+                        // !!! ASSUMPTION: Your entity is `ImageEmbedding`
+                        val allImageEmbeddings = imageEmbeddingDao.getAllEmbeddings()
+                        Log.d(TAG, "Comparing query against ${allImageEmbeddings.size} images")
+
+                        val similarityResults = mutableListOf<SearchResult>()
+
+                        // 4. Calculate similarity for each image
+                        for (imageEmbedding in allImageEmbeddings) {
+                            // !!! ASSUMPTION: The vector is on `.embedding` property
+                            val similarity = SimilarityUtil.cosineSimilarity(
+                                textEmbedding,
+                                imageEmbedding.embedding
+                            )
+
+                            // --- ADDED LOGGING ---
+                            // Get last 20 chars of URI for a cleaner log
+                            val shortUri = imageEmbedding.uri.takeLast(20)
+                            Log.d(TAG, "Similarity for ...$shortUri: $similarity")
+                            // --- END ADDED LOGGING ---
+
+                            // 5. Filter by a similarity threshold
+                            if (similarity > 0.2f) { // <-- You can tune this threshold
+                                // !!! ASSUMPTION: The URI is on `.uri` property
+                                similarityResults.add(
+                                    SearchResult(imageEmbedding.uri, similarity)
+                                )
+                            }
+                        }
+
+                        // 6. Sort by similarity (highest first)
+                        similarityResults.sortByDescending { it.similarity }
+
+                        // 7. Return just the list of URIs
+                        similarityResults.map { it.uri }
+                    }
+
+                    // --- The rest of this is your *existing* UI logic ---
                     val message: String
-                    if (uris.isEmpty()) {
+                    if (foundUris.isEmpty()) {
                         message = "I couldn't find any photos matching '$query'."
                         addMessage(ChatMessage(text = message, sender= Sender.AGENT))
                     } else {
                         _uiState.update {
                             it.copy(
                                 isSelectionSheetOpen = true,
-                                selectionSheetUris = uris
+                                selectionSheetUris = foundUris
                             )
                         }
-                        message = "I found ${uris.size} photos for you. [Tap to view and select]"
+                        message = "I found ${foundUris.size} photos for you. [Tap to view and select]"
                         addMessage(ChatMessage(
                             text = message,
                             sender = Sender.AGENT,
-                            imageUris = uris, // Store URIs in the message
+                            imageUris = foundUris, // Store URIs in the message
                             hasSelectionPrompt = true
                         ))
                     }
-                    mapOf("photos_found" to uris.size)
+                    mapOf("photos_found" to foundUris.size)
                 }
                 "delete_photos" -> {
                     val uris = getUrisFromArgsOrSelection(toolCall.args["photo_uris"])
@@ -310,7 +395,7 @@ class AgentViewModel(
 
                     if (intentSender != null) {
                         pendingToolCallId = toolCall.id
-                        pendingToolArgs = null
+                        pendingToolArgs = mapOf("photo_uris" to uris)
                         setStatus(AgentStatus.RequiresPermission(
                             intentSender, PermissionType.DELETE, "Waiting for user permission to delete..."
                         ))
@@ -466,10 +551,36 @@ class AgentViewModelFactory(
         NetworkModule.apiService
     }
 
+    // --- ADDED DEPENDENCIES ---
+    private val appDatabase: AppDatabase by lazy {
+        AppDatabase.getDatabase(application)
+    }
+
+    private val imageEmbeddingDao: ImageEmbeddingDao by lazy {
+        appDatabase.imageEmbeddingDao()
+    }
+
+    private val clipTokenizer: ClipTokenizer by lazy {
+        ClipTokenizer(application)
+    }
+
+    private val textEncoder: TextEncoder by lazy {
+        TextEncoder(application)
+    }
+    // --- END ADDED DEPENDENCIES ---
+
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(AgentViewModel::class.java)) {
-            return AgentViewModel(application, agentApi, galleryTools, gson) as T
+            return AgentViewModel(
+                application,
+                agentApi,
+                galleryTools,
+                gson,
+                imageEmbeddingDao,
+                clipTokenizer,
+                textEncoder
+            ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
