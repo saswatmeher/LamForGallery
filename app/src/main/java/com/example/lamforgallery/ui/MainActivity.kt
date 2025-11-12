@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
 
             val wasSuccessful = activityResult.resultCode == RESULT_OK
             Log.d(TAG, "Permission result for $type: ${if (wasSuccessful) "GRANTED" else "DENIED"}")
-            agentViewModel.onPermissionResult(wasSuccessful, type) // Pass to Agent VM
+            agentViewModel.handlePermissionResult(wasSuccessful) // Pass to Agent VM
             currentPermissionType = null
         }
     // --- END MODIFY PERMISSIONS ---

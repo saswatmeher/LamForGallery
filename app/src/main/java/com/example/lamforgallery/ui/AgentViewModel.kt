@@ -5,20 +5,18 @@ import android.content.IntentSender
 import android.os.Build
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.lamforgallery.data.AgentRequest
-import com.example.lamforgallery.data.AgentResponse
-import com.example.lamforgallery.data.ToolCall
-import com.example.lamforgallery.data.ToolResult
-import com.example.lamforgallery.network.AgentApiService
-import com.example.lamforgallery.network.NetworkModule
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.core.tools.reflect.asTools
+import ai.koog.prompt.executor.clients.google.GoogleModels
+import ai.koog.prompt.executor.llms.all.simpleGoogleAIExecutor
 import com.example.lamforgallery.tools.GalleryTools
+import com.example.lamforgallery.tools.GalleryToolSet
+import com.example.lamforgallery.tools.SemanticSearchToolSet
 import com.example.lamforgallery.database.ImageEmbeddingDao
 import com.example.lamforgallery.ml.ClipTokenizer
 import com.example.lamforgallery.ml.TextEncoder
-import com.example.lamforgallery.utils.SimilarityUtil
-import com.example.lamforgallery.database.AppDatabase
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.io.File
 
 // --- STATE DEFINITIONS ---
 
@@ -43,7 +42,7 @@ data class ChatMessage(
     val text: String,
     val sender: Sender,
     val imageUris: List<String>? = null,
-    val hasSelectionPrompt: Boolean = false // <-- Marks a message as "Tap to select"
+    val hasSelectionPrompt: Boolean = false
 )
 
 enum class Sender {
@@ -52,7 +51,6 @@ enum class Sender {
 
 /**
  * Represents the current *status* of the agent
- * (Loading, Waiting for Permission, or Idle)
  */
 sealed class AgentStatus {
     data class Loading(val message: String) : AgentStatus()
@@ -70,22 +68,16 @@ sealed class AgentStatus {
 data class AgentUiState(
     val messages: List<ChatMessage> = emptyList(),
     val currentStatus: AgentStatus = AgentStatus.Idle,
-    val selectedImageUris: Set<String> = emptySet(), // Holds the *final* selection
-
-    // --- STATE FOR THE BOTTOM SHEET ---
+    val selectedImageUris: Set<String> = emptySet(),
     val isSelectionSheetOpen: Boolean = false,
-    val selectionSheetUris: List<String> = emptyList()
-    // --- END STATE ---
+    val selectionSheetUris: List<String> = emptyList(),
+    val apiKey: String = ""
 )
 
 enum class PermissionType { DELETE, WRITE }
 
-// --- END STATE ---
-
-
 class AgentViewModel(
-    application: Application,
-    private val agentApi: AgentApiService,
+    private val application: Application,
     private val galleryTools: GalleryTools,
     private val gson: Gson,
     private val imageEmbeddingDao: ImageEmbeddingDao,
@@ -94,82 +86,196 @@ class AgentViewModel(
 ) : ViewModel() {
 
     private val TAG = "AgentViewModel"
-    private var currentSessionId: String = UUID.randomUUID().toString()
+    
+    // Koog AI Agent
+    private var agent: AIAgent<String, String>? = null
+    
+    // API key will be read from file
+    private var currentApiKey: String = ""
+    
+    // State for permission flow
+    private var pendingPermissionData: PendingPermissionData? = null
 
-    // Used to pause the loop for permission
-    private var pendingToolCallId: String? = null
-    private var pendingToolArgs: Map<String, Any>? = null
-
-    private val _uiState = MutableStateFlow(AgentUiState())
+    private val _uiState = MutableStateFlow(AgentUiState(apiKey = currentApiKey))
     val uiState: StateFlow<AgentUiState> = _uiState.asStateFlow()
 
     private val _galleryDidChange = MutableSharedFlow<Unit>()
     val galleryDidChange: SharedFlow<Unit> = _galleryDidChange.asSharedFlow()
 
-    private data class SearchResult(val uri: String, val similarity: Float)
+    data class PendingPermissionData(
+        val photoUris: List<String>,
+        val permissionType: PermissionType,
+        val albumName: String? = null // For move operations
+    )
+
+    init {
+        // Read API key from file and initialize agent
+        viewModelScope.launch {
+            try {
+                val apiKey = readApiKeyFromFile()
+                if (apiKey.isNotEmpty()) {
+                    currentApiKey = apiKey
+                    _uiState.update { it.copy(apiKey = apiKey) }
+                    initializeAgent(apiKey)
+                } else {
+                    addMessage(ChatMessage(
+                        text = """⚠️ API key not found. Please create a file at:
+                            |${getApiKeyFilePath()}
+                            |
+                            |Add your Gemini API key as a single line in this file.""".trimMargin(),
+                        sender = Sender.ERROR
+                    ))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize agent on startup", e)
+                addMessage(ChatMessage(
+                    text = "Failed to initialize agent: ${e.message}\n\nPlease check API key file at: ${getApiKeyFilePath()}",
+                    sender = Sender.ERROR
+                ))
+            }
+        }
+    }
 
     /**
-     * Called by the UI when a user taps an image *in the chat bubble*.
+     * Returns the path where the API key file should be located.
+     * File: /data/data/com.example.lamforgallery/files/gemini_api_key.txt
      */
+    private fun getApiKeyFilePath(): String {
+        return File(application.filesDir, "gemini_api_key.txt").absolutePath
+    }
+
+    /**
+     * Reads the API key from the internal file.
+     * Returns empty string if file doesn't exist or can't be read.
+     */
+    private suspend fun readApiKeyFromFile(): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                val file = File(application.filesDir, "gemini_api_key.txt")
+                if (file.exists()) {
+                    val content = file.readText().trim()
+                    Log.d(TAG, "API key loaded from: ${file.absolutePath}")
+                    content
+                } else {
+                    Log.w(TAG, "API key file not found at: ${file.absolutePath}")
+                    ""
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reading API key file", e)
+                ""
+            }
+        }
+    }
+
+    // --- API KEY MANAGEMENT ---
+    
+    fun setApiKey(apiKey: String) {
+        _uiState.update { it.copy(apiKey = apiKey) }
+    }
+
+    // --- SELECTION MANAGEMENT ---
+
+    fun openSelectionSheet(uris: List<String>) {
+        _uiState.update {
+            it.copy(isSelectionSheetOpen = true, selectionSheetUris = uris)
+        }
+    }
+
+    fun closeSelectionSheet() {
+        _uiState.update {
+            it.copy(isSelectionSheetOpen = false, selectionSheetUris = emptyList())
+        }
+    }
+
+    fun confirmSelection(selectedUris: Set<String>) {
+        _uiState.update {
+            it.copy(
+                selectedImageUris = selectedUris,
+                isSelectionSheetOpen = false,
+                selectionSheetUris = emptyList()
+            )
+        }
+    }
+
+    fun clearSelection() {
+        _uiState.update { it.copy(selectedImageUris = emptySet()) }
+    }
+
     fun toggleImageSelection(uri: String) {
         _uiState.update { currentState ->
-            val newSelection = currentState.selectedImageUris.toMutableSet()
-            if (newSelection.contains(uri)) {
-                newSelection.remove(uri)
+            val currentSelection = currentState.selectedImageUris
+            val newSelection = if (currentSelection.contains(uri)) {
+                currentSelection - uri
             } else {
-                newSelection.add(uri)
+                currentSelection + uri
             }
             currentState.copy(selectedImageUris = newSelection)
         }
     }
 
+    // --- PERMISSION HANDLING ---
 
+    fun handlePermissionResult(granted: Boolean) {
+        val pending = pendingPermissionData
+        if (pending == null) {
+            Log.w(TAG, "No pending permission data")
+            setStatus(AgentStatus.Idle)
+            return
+        }
 
-    // --- FUNCTIONS FOR BOTTOM SHEET ---
+        viewModelScope.launch {
+            if (!granted) {
+                addMessage(ChatMessage(text = "Permission denied by user.", sender = Sender.ERROR))
+                setStatus(AgentStatus.Idle)
+                pendingPermissionData = null
+                return@launch
+            }
 
-    /**
-     * Called by the UI (the chat bubble) to open the sheet.
-     */
-    fun openSelectionSheet(uris: List<String>) {
-        _uiState.update {
-            it.copy(
-                isSelectionSheetOpen = true,
-                selectionSheetUris = uris
-            )
+            // Execute the pending operation
+            when (pending.permissionType) {
+                PermissionType.DELETE -> {
+                    addMessage(ChatMessage(text = "Deleting ${pending.photoUris.size} photos...", sender = Sender.AGENT))
+                    // For delete, the system handles it automatically after permission
+                    addMessage(ChatMessage(text = "Successfully deleted ${pending.photoUris.size} photos.", sender = Sender.AGENT))
+                    
+                    // Clean up database
+                    withContext(Dispatchers.IO) {
+                        try {
+                            pending.photoUris.forEach { uri ->
+                                imageEmbeddingDao.deleteByUri(uri)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to delete embeddings", e)
+                        }
+                    }
+                    
+                    _uiState.update { currentState ->
+                        currentState.copy(selectedImageUris = currentState.selectedImageUris - pending.photoUris.toSet())
+                    }
+                    
+                    _galleryDidChange.emit(Unit)
+                }
+                PermissionType.WRITE -> {
+                    if (pending.albumName != null) {
+                        addMessage(ChatMessage(text = "Moving ${pending.photoUris.size} photos to '${pending.albumName}'...", sender = Sender.AGENT))
+                        val success = galleryTools.performMoveOperation(pending.photoUris, pending.albumName)
+                        if (success) {
+                            addMessage(ChatMessage(text = "Successfully moved ${pending.photoUris.size} photos to '${pending.albumName}'.", sender = Sender.AGENT))
+                            _galleryDidChange.emit(Unit)
+                        } else {
+                            addMessage(ChatMessage(text = "Failed to move photos.", sender = Sender.ERROR))
+                        }
+                    }
+                }
+            }
+
+            pendingPermissionData = null
+            setStatus(AgentStatus.Idle)
         }
     }
 
-    /**
-     * Called by the UI (the sheet's "Confirm" button).
-     */
-    fun confirmSelection(newSelection: Set<String>) {
-        _uiState.update {
-            it.copy(
-                isSelectionSheetOpen = false,
-                selectedImageUris = newSelection,
-                selectionSheetUris = emptyList() // Clear sheet data
-            )
-        }
-    }
+    // --- USER INPUT ---
 
-    /**
-     * Called by the UI (when the sheet is dismissed).
-     */
-    fun closeSelectionSheet() {
-        _uiState.update {
-            it.copy(
-                isSelectionSheetOpen = false,
-                selectionSheetUris = emptyList() // Clear sheet data
-            )
-        }
-    }
-
-    // --- END BOTTOM SHEET FUNCTIONS ---
-
-
-    /**
-     * Called by the UI when the user hits "Send".
-     */
     fun sendUserInput(input: String) {
         val currentState = _uiState.value
         if (currentState.currentStatus !is AgentStatus.Idle) {
@@ -177,357 +283,180 @@ class AgentViewModel(
             return
         }
 
+        val apiKey = currentState.apiKey
+        if (apiKey.isEmpty()) {
+            addMessage(ChatMessage(text = "Please enter your Gemini API key first.", sender = Sender.ERROR))
+            return
+        }
+
         // Get the current selection and clear it
         val selectedUris = currentState.selectedImageUris.toList()
-        _uiState.update { it.copy(selectedImageUris = emptySet()) } // Clear selection
+        _uiState.update { it.copy(selectedImageUris = emptySet()) }
 
         viewModelScope.launch {
             addMessage(ChatMessage(text = input, sender = Sender.USER))
             setStatus(AgentStatus.Loading("Thinking..."))
 
-            val request = AgentRequest(
-                sessionId = currentSessionId,
-                userInput = input,
-                toolResult = null,
-                selectedUris = selectedUris.ifEmpty { null }
-            )
-            Log.d(TAG, "Sending user input: $input, selection: $selectedUris")
-            handleAgentRequest(request)
-        }
-    }
+            try {
+                // Initialize agent if needed
+                if (agent == null || currentApiKey != apiKey) {
+                    initializeAgent(apiKey)
+                }
 
-    /**
-     * Called by the Activity when a permission dialog (delete/move) returns.
-     */
-    fun onPermissionResult(wasSuccessful: Boolean, type: PermissionType) {
-        val toolCallId = pendingToolCallId
-        val args = pendingToolArgs
+                // Build context with selected URIs if any
+                val contextMessage = if (selectedUris.isNotEmpty()) {
+                    "$input\n\nUser has selected these photos: ${selectedUris.joinToString(", ")}"
+                } else {
+                    input
+                }
 
-        if (toolCallId == null) {
-            Log.e(TAG, "onPermissionResult called but no pending tool call!")
-            return
-        }
-
-
-
-        viewModelScope.launch {
-            pendingToolCallId = null
-            pendingToolArgs = null
-            if (!wasSuccessful) {
-                Log.w(TAG, "User denied permission for $type")
-                addMessage(ChatMessage(text = "User denied permission.", sender = Sender.ERROR))
-                sendToolResult(gson.toJson(false), toolCallId)
-                return@launch
-            }
-
-            when (type) {
-                PermissionType.DELETE -> {
-                    // --- START FIX ---
-                    if (args == null) {
-                        Log.e(TAG, "Delete permission granted but no pending args!")
-                        addMessage(ChatMessage(text = "Error: Missing context for delete operation.", sender = Sender.ERROR))
-                        sendToolResult(gson.toJson(false), toolCallId)
-                        return@launch
-                    }
-
-                    val urisToDelete = args["photo_uris"] as? List<String> ?: emptyList()
-
-                    // Delete from database in the background
-                    withContext(Dispatchers.IO) {
-                        try {
-                            urisToDelete.forEach { uri ->
-                                imageEmbeddingDao.deleteByUri(uri)
+                Log.d(TAG, "Sending to agent: $contextMessage")
+                
+                // Run the agent
+                val response = agent?.run(contextMessage)
+                
+                if (response != null) {
+                    // Check if response requires permission
+                    if (response.contains("\"requiresPermission\": true")) {
+                        handlePermissionResponse(response)
+                    } else {
+                        // Parse and display the response
+                        addMessage(ChatMessage(text = response, sender = Sender.AGENT))
+                        
+                        // Check if response contains photo URIs for display
+                        if (response.contains("photoUris")) {
+                            try {
+                                val uris = extractPhotoUris(response)
+                                if (uris.isNotEmpty()) {
+                                    openSelectionSheet(uris)
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to extract photo URIs", e)
                             }
-                            Log.d(TAG, "Deleted ${urisToDelete.size} embeddings from database.")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to delete embeddings from DB", e)
-                            // Don't block the agent, just log the error
                         }
+                        
+                        setStatus(AgentStatus.Idle)
                     }
-                    // 2. Clean up local UI state (prevents black box on re-search)
-                    _uiState.update { currentState ->
-                        currentState.copy(
-                            selectedImageUris = currentState.selectedImageUris - urisToDelete.toSet(),
-                            selectionSheetUris = currentState.selectionSheetUris - urisToDelete.toSet()
-                        )
-                    }
-
-                    // 3. Signal to other ViewModels (like EmbeddingViewModel) to refresh their count
-                    _galleryDidChange.emit(Unit)
-                    // --- END FIX/UPDATE ---
-
-                    sendToolResult(gson.toJson(true), toolCallId)
-                    _galleryDidChange.emit(Unit)
-                }
-                PermissionType.WRITE -> {
-                    if (args == null) {
-                        Log.e(TAG, "Write permission granted but no pending args!")
-                        addMessage(ChatMessage(text = "Error: Missing context for move operation.", sender = Sender.ERROR))
-                        sendToolResult(gson.toJson(false), toolCallId)
-                        return@launch
-                    }
-                    setStatus(AgentStatus.Loading("Moving files..."))
-                    val uris = args["photo_uris"] as? List<String> ?: emptyList()
-                    val album = args["album_name"] as? String ?: "New Album"
-                    val moveResult = galleryTools.performMoveOperation(uris, album)
-                    sendToolResult(gson.toJson(moveResult), toolCallId)
-                    _galleryDidChange.emit(Unit)
-                }
-            }
-        }
-    }
-
-    private suspend fun handleAgentRequest(request: AgentRequest) {
-        try {
-            val response = agentApi.invokeAgent(request)
-            currentSessionId = response.sessionId
-
-            when (response.status) {
-                "complete" -> {
-                    val message = response.agentMessage ?: "Done."
-                    addMessage(ChatMessage(text = message, sender= Sender.AGENT))
+                } else {
+                    addMessage(ChatMessage(text = "No response from agent.", sender = Sender.ERROR))
                     setStatus(AgentStatus.Idle)
                 }
-                "requires_action" -> {
-                    val action = response.nextActions?.firstOrNull()
-                    if (action == null) {
-                        Log.e(TAG, "Agent required action but sent none.")
-                        addMessage(ChatMessage(text = "Agent error: No action provided.", sender= Sender.ERROR))
-                        setStatus(AgentStatus.Idle)
-                        return
-                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in agent execution", e)
+                addMessage(ChatMessage(text = "Error: ${e.message}", sender = Sender.ERROR))
+                setStatus(AgentStatus.Idle)
+            }
+        }
+    }
 
-                    setStatus(AgentStatus.Loading("Working on it: ${action.name}..."))
+    private suspend fun initializeAgent(apiKey: String) {
+        currentApiKey = apiKey
+        
+        addMessage(ChatMessage(text = "Initializing Koog Agent with Gemini...", sender = Sender.AGENT))
+        
+        // Create tool registry
+        val galleryToolSet = GalleryToolSet(galleryTools)
+        val semanticSearchToolSet = SemanticSearchToolSet(imageEmbeddingDao, clipTokenizer, textEncoder)
+        
+        val toolRegistry = ToolRegistry {
+            tools(galleryToolSet.asTools())
+            tools(semanticSearchToolSet.asTools())
+        }
+        
+        agent = AIAgent(
+            promptExecutor = simpleGoogleAIExecutor(apiKey),
+            systemPrompt = """You are a helpful AI assistant for managing photos in a gallery app.
+                |You have access to powerful tools for:
+                |1. Searching photos by filename or semantic content (using AI)
+                |2. Organizing photos into albums
+                |3. Deleting photos
+                |4. Creating collages
+                |5. Applying filters (grayscale, sepia)
+                |
+                |When a user asks to search for photos, use searchPhotos for filename-based search or searchPhotosBySemantic for content-based search (e.g., "sunset", "people smiling").
+                |When you find photos, return the full JSON response so the user can see and select them.
+                |For operations that modify photos (delete, move), make sure to use the tools correctly and inform the user of the results.
+                |Be concise and helpful in your responses.""".trimMargin(),
+            llmModel = GoogleModels.Gemini2_0Flash,
+            temperature = 0.7,
+            maxIterations = 30,
+            toolRegistry = toolRegistry
+        )
+        
+        addMessage(ChatMessage(text = "✅ Agent ready! You can now search, organize, and edit your photos.", sender = Sender.AGENT))
+    }
 
-                    val toolResultObject = executeLocalTool(action)
-
-                    if (toolResultObject != null) {
-                        val resultJson = gson.toJson(toolResultObject)
-                        sendToolResult(resultJson, action.id)
-                    } else {
-                        Log.d(TAG, "Loop paused, waiting for permission result.")
-                    }
+    private fun handlePermissionResponse(response: String) {
+        try {
+            // Parse the JSON response to extract permission requirements
+            val permissionTypeStr = extractJsonField(response, "permissionType")
+            val urisJson = extractJsonArray(response, "photoUris")
+            val albumName = extractJsonField(response, "albumName")
+            
+            val photoUris = urisJson.split(",").map { it.trim('"', ' ', '[', ']') }.filter { it.isNotEmpty() }
+            
+            val permissionType = when (permissionTypeStr) {
+                "DELETE" -> PermissionType.DELETE
+                "WRITE" -> PermissionType.WRITE
+                else -> {
+                    addMessage(ChatMessage(text = "Unknown permission type: $permissionTypeStr", sender = Sender.ERROR))
+                    setStatus(AgentStatus.Idle)
+                    return
                 }
             }
+            
+            // Create intent sender
+            val intentSender = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                when (permissionType) {
+                    PermissionType.DELETE -> galleryTools.createDeleteIntentSender(photoUris)
+                    PermissionType.WRITE -> galleryTools.createWriteIntentSender(photoUris)
+                }
+            } else {
+                null
+            }
+            
+            if (intentSender == null) {
+                addMessage(ChatMessage(text = "This operation requires Android 11 or higher.", sender = Sender.ERROR))
+                setStatus(AgentStatus.Idle)
+                return
+            }
+            
+            // Store pending data
+            pendingPermissionData = PendingPermissionData(
+                photoUris = photoUris,
+                permissionType = permissionType,
+                albumName = albumName
+            )
+            
+            val message = when (permissionType) {
+                PermissionType.DELETE -> "Request permission to delete ${photoUris.size} photos"
+                PermissionType.WRITE -> "Request permission to move ${photoUris.size} photos"
+            }
+            
+            setStatus(AgentStatus.RequiresPermission(intentSender, permissionType, message))
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error in agent loop", e)
-            addMessage(ChatMessage(text = e.message ?: "Unknown network error", sender= Sender.ERROR))
+            Log.e(TAG, "Error handling permission response", e)
+            addMessage(ChatMessage(text = "Error processing permission request: ${e.message}", sender = Sender.ERROR))
             setStatus(AgentStatus.Idle)
         }
     }
 
-    private suspend fun executeLocalTool(toolCall: ToolCall): Any? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
-            (toolCall.name == "delete_photos" || toolCall.name == "move_photos_to_album")) {
-            Log.w(TAG, "Skipping ${toolCall.name}, requires Android 11+")
-            return mapOf("error" to "Modify/Delete operations require Android 11+")
-        }
-
-        val result: Any? = try {
-            when (toolCall.name) {
-                "search_photos" -> {
-                    val query = toolCall.args["query"] as? String ?: ""
-                    Log.d(TAG, "Performing SEMANTIC search for: $query")
-
-                    // Run search logic on a background thread
-                    val foundUris = withContext(Dispatchers.IO) {
-                        // 1. Tokenize the text query
-                        val tokens = clipTokenizer.tokenize(query)
-
-                        // 2. Encode the tokens into a text embedding
-                        val textEmbedding = textEncoder.encode(tokens)
-
-                        // 3. Get all image embeddings from the database
-                        // !!! ASSUMPTION: You have a DAO function `getAll()`
-                        // !!! ASSUMPTION: Your entity is `ImageEmbedding`
-                        val allImageEmbeddings = imageEmbeddingDao.getAllEmbeddings()
-                        Log.d(TAG, "Comparing query against ${allImageEmbeddings.size} images")
-
-                        val similarityResults = mutableListOf<SearchResult>()
-
-                        // 4. Calculate similarity for each image
-                        for (imageEmbedding in allImageEmbeddings) {
-                            // !!! ASSUMPTION: The vector is on `.embedding` property
-                            val similarity = SimilarityUtil.cosineSimilarity(
-                                textEmbedding,
-                                imageEmbedding.embedding
-                            )
-
-                            // --- ADDED LOGGING ---
-                            // Get last 20 chars of URI for a cleaner log
-                            val shortUri = imageEmbedding.uri.takeLast(20)
-                            Log.d(TAG, "Similarity for ...$shortUri: $similarity")
-                            // --- END ADDED LOGGING ---
-
-                            // 5. Filter by a similarity threshold
-                            if (similarity > 0.2f) { // <-- You can tune this threshold
-                                // !!! ASSUMPTION: The URI is on `.uri` property
-                                similarityResults.add(
-                                    SearchResult(imageEmbedding.uri, similarity)
-                                )
-                            }
-                        }
-
-                        // 6. Sort by similarity (highest first)
-                        similarityResults.sortByDescending { it.similarity }
-
-                        // 7. Return just the list of URIs
-                        similarityResults.map { it.uri }
-                    }
-
-                    // --- The rest of this is your *existing* UI logic ---
-                    val message: String
-                    if (foundUris.isEmpty()) {
-                        message = "I couldn't find any photos matching '$query'."
-                        addMessage(ChatMessage(text = message, sender= Sender.AGENT))
-                    } else {
-                        _uiState.update {
-                            it.copy(
-                                isSelectionSheetOpen = true,
-                                selectionSheetUris = foundUris
-                            )
-                        }
-                        message = "I found ${foundUris.size} photos for you. [Tap to view and select]"
-                        addMessage(ChatMessage(
-                            text = message,
-                            sender = Sender.AGENT,
-                            imageUris = foundUris, // Store URIs in the message
-                            hasSelectionPrompt = true
-                        ))
-                    }
-                    mapOf("photos_found" to foundUris.size)
-                }
-                "delete_photos" -> {
-                    val uris = getUrisFromArgsOrSelection(toolCall.args["photo_uris"])
-                    if (uris.isEmpty()) throw Exception("No photos were selected for deletion.")
-
-                    val intentSender = galleryTools.createDeleteIntentSender(uris)
-
-                    if (intentSender != null) {
-                        pendingToolCallId = toolCall.id
-                        pendingToolArgs = mapOf("photo_uris" to uris)
-                        setStatus(AgentStatus.RequiresPermission(
-                            intentSender, PermissionType.DELETE, "Waiting for user permission to delete..."
-                        ))
-                        null
-                    } else {
-                        mapOf("error" to "Could not create delete request.")
-                    }
-                }
-                "move_photos_to_album" -> {
-                    val uris = getUrisFromArgsOrSelection(toolCall.args["photo_uris"])
-                    if (uris.isEmpty()) throw Exception("No photos were selected to move.")
-
-                    val intentSender = galleryTools.createWriteIntentSender(uris)
-
-                    if (intentSender != null) {
-                        pendingToolCallId = toolCall.id
-                        pendingToolArgs = mapOf(
-                            "photo_uris" to uris,
-                            "album_name" to (toolCall.args["album_name"] as? String ?: "New Album")
-                        )
-                        setStatus(AgentStatus.RequiresPermission(
-                            intentSender, PermissionType.WRITE, "Waiting for user permission to move files..."
-                        ))
-                        null
-                    } else {
-                        mapOf("error" to "Could not create write/move request.")
-                    }
-                }
-                "create_collage" -> {
-                    val uris = getUrisFromArgsOrSelection(toolCall.args["photo_uris"])
-                    if (uris.isEmpty()) throw Exception("No photos were selected for the collage.")
-
-                    val title = toolCall.args["title"] as? String ?: "My Collage"
-                    val newCollageUri = galleryTools.createCollage(uris, title)
-
-                    // Collage is simple, we can still show the result in-line
-                    val message = "I've created the collage '$title' for you."
-                    val imageList = if (newCollageUri != null) listOf(newCollageUri) else null
-                    addMessage(ChatMessage(text = message, sender= Sender.AGENT, imageUris = imageList))
-                    viewModelScope.launch { _galleryDidChange.emit(Unit) }
-                    newCollageUri
-                }
-
-                // --- *** THIS IS THE FIX *** ---
-                "apply_filter" -> {
-                    val uris = getUrisFromArgsOrSelection(toolCall.args["photo_uris"])
-                    if (uris.isEmpty()) throw Exception("No photos were selected to apply a filter.")
-
-                    val filterName = toolCall.args["filter_name"] as? String ?: "grayscale"
-                    val newImageUris = galleryTools.applyFilter(uris, filterName)
-
-                    val message: String
-                    if (newImageUris.isEmpty()) {
-                        message = "I wasn't able to apply the filter to the selected photos."
-                        addMessage(ChatMessage(text = message, sender = Sender.ERROR))
-                    } else {
-                        // 1. Set state to open the sheet
-                        _uiState.update {
-                            it.copy(
-                                isSelectionSheetOpen = true,
-                                selectionSheetUris = newImageUris
-                            )
-                        }
-                        // 2. Add a *prompt* to the chat
-                        message = "I've applied the '$filterName' filter to ${newImageUris.size} photo(s). [Tap to view]"
-                        addMessage(ChatMessage(
-                            text = message,
-                            sender = Sender.AGENT,
-                            imageUris = newImageUris, // Store URIs in the message
-                            hasSelectionPrompt = true
-                        ))
-                    }
-                    if (newImageUris.isNotEmpty()) {
-                        viewModelScope.launch { _galleryDidChange.emit(Unit) }
-                    }
-                    newImageUris
-                }
-                // --- *** END OF FIX *** ---
-
-                else -> {
-                    Log.w(TAG, "Unknown tool called: ${toolCall.name}")
-                    mapOf("error" to "Tool '${toolCall.name}' is not implemented on this client.")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error executing local tool: ${toolCall.name}", e)
-            addMessage(ChatMessage(text = "Error: ${e.message}", sender = Sender.ERROR))
-            mapOf("error" to "Failed to execute ${toolCall.name}: ${e.message}")
-        }
-
-        return result
+    private fun extractJsonField(json: String, field: String): String {
+        val pattern = """"$field"\s*:\s*"([^"]*)"""".toRegex()
+        return pattern.find(json)?.groupValues?.get(1) ?: ""
     }
 
-    private fun getUrisFromArgsOrSelection(argUris: Any?): List<String> {
-        val selectedUris = _uiState.value.selectedImageUris
-
-        if (selectedUris.isNotEmpty()) {
-            return selectedUris.toList()
-        }
-
-        return (argUris as? List<String>) ?: emptyList()
+    private fun extractJsonArray(json: String, field: String): String {
+        val pattern = """"$field"\s*:\s*\[([^\]]*)\]""".toRegex()
+        return pattern.find(json)?.groupValues?.get(1) ?: ""
     }
 
-    private fun sendToolResult(resultJsonString: String, toolCallId: String) {
-        viewModelScope.launch {
-            setStatus(AgentStatus.Loading("Sending result to agent..."))
-
-            val toolResult = ToolResult(
-                toolCallId = toolCallId,
-                content = resultJsonString
-            )
-
-            val request = AgentRequest(
-                sessionId = currentSessionId,
-                userInput = null,
-                toolResult = toolResult,
-                selectedUris = null
-            )
-
-            Log.d(TAG, "Sending tool result: $resultJsonString")
-            handleAgentRequest(request)
-        }
+    private fun extractPhotoUris(response: String): List<String> {
+        val urisJson = extractJsonArray(response, "photoUris")
+        return urisJson.split(",")
+            .map { it.trim('"', ' ') }
+            .filter { it.isNotEmpty() && it.startsWith("content://") }
     }
 
     private fun addMessage(message: ChatMessage) {
@@ -539,59 +468,15 @@ class AgentViewModel(
     private fun setStatus(newStatus: AgentStatus) {
         _uiState.update { it.copy(currentStatus = newStatus) }
     }
-}
 
-
-/**
- * ViewModel Factory
- */
-class AgentViewModelFactory(
-    private val application: Application
-) : ViewModelProvider.Factory {
-
-    private val gson: Gson by lazy {
-        NetworkModule.gson
-    }
-
-    private val galleryTools: GalleryTools by lazy {
-        GalleryTools(application.contentResolver)
-    }
-
-    private val agentApi: AgentApiService by lazy {
-        NetworkModule.apiService
-    }
-
-    // --- ADDED DEPENDENCIES ---
-    private val appDatabase: AppDatabase by lazy {
-        AppDatabase.getDatabase(application)
-    }
-
-    private val imageEmbeddingDao: ImageEmbeddingDao by lazy {
-        appDatabase.imageEmbeddingDao()
-    }
-
-    private val clipTokenizer: ClipTokenizer by lazy {
-        ClipTokenizer(application)
-    }
-
-    private val textEncoder: TextEncoder by lazy {
-        TextEncoder(application)
-    }
-    // --- END ADDED DEPENDENCIES ---
-
-    @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(AgentViewModel::class.java)) {
-            return AgentViewModel(
-                application,
-                agentApi,
-                galleryTools,
-                gson,
-                imageEmbeddingDao,
-                clipTokenizer,
-                textEncoder
-            ) as T
+    fun clearHistory() {
+        agent = null
+        currentApiKey = ""
+        _uiState.update { 
+            AgentUiState(
+                messages = listOf(ChatMessage(text = "Conversation cleared. Send a new message to start.", sender = Sender.AGENT)),
+                apiKey = _uiState.value.apiKey
+            )
         }
-        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }

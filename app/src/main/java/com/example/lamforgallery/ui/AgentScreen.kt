@@ -101,6 +101,8 @@ fun AgentScreen(
             ChatInputBar(
                 status = uiState.currentStatus,
                 selectionCount = uiState.selectedImageUris.size,
+                apiKey = uiState.apiKey,
+                onApiKeyChange = { viewModel.setApiKey(it) },
                 onSend = { inputText ->
                     viewModel.sendUserInput(inputText)
                 }
@@ -379,10 +381,42 @@ fun SelectablePhotoItem(
 fun ChatInputBar(
     status: AgentStatus,
     selectionCount: Int,
+    apiKey: String,
+    onApiKeyChange: (String) -> Unit,
     onSend: (String) -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
+    var showApiKeyDialog by remember { mutableStateOf(false) }  // Don't show automatically - API key loaded from file
     val isEnabled = status is AgentStatus.Idle
+
+    // API Key Configuration Dialog
+    if (showApiKeyDialog) {
+        AlertDialog(
+            onDismissRequest = { showApiKeyDialog = false },
+            title = { Text("Gemini API Key") },
+            text = {
+                Column {
+                    Text("Please enter your Gemini API key to use the AI agent.")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = apiKey,
+                        onValueChange = onApiKeyChange,
+                        label = { Text("API Key") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showApiKeyDialog = false },
+                    enabled = apiKey.isNotEmpty()
+                ) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -421,6 +455,18 @@ fun ChatInputBar(
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold
                         )
+                    } else {
+                        // Show API key status
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { showApiKeyDialog = true }
+                        ) {
+                            Text(
+                                text = if (apiKey.isEmpty()) "⚠️ API Key not set" else "✓ API Key configured",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (apiKey.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }
@@ -441,7 +487,7 @@ fun ChatInputBar(
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 singleLine = true,
-                enabled = isEnabled
+                enabled = isEnabled && apiKey.isNotEmpty()
             )
 
             Spacer(modifier = Modifier.width(8.dp))
@@ -452,8 +498,8 @@ fun ChatInputBar(
                     inputText = ""
                 },
                 // --- UPDATE ENABLED LOGIC ---
-                // Can send if text OR selection is present
-                enabled = isEnabled && (inputText.isNotBlank() || selectionCount > 0),
+                // Can send if text OR selection is present AND API key is set
+                enabled = isEnabled && apiKey.isNotEmpty() && (inputText.isNotBlank() || selectionCount > 0),
                 modifier = Modifier.height(56.dp)
             ) {
                 Text("Send")
