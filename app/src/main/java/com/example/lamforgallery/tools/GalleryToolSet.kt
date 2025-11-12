@@ -48,7 +48,7 @@ class GalleryToolSet(
             // Update UI with search results via callback
             onSearchResults?.invoke(uris)
             
-            """{"photoUris": ${uris.map { "\"$it\"" }}, "count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
+            """{"count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
         } catch (e: Exception) {
             Log.e(TAG, "Error searching photos", e)
             """{"error": "Failed to search photos: ${e.message}"}"""
