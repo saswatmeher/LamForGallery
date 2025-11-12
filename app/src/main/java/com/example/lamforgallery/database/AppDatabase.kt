@@ -10,8 +10,8 @@ import androidx.room.TypeConverters
  * The main Room database class for the application.
  */
 @Database(
-    entities = [ImageEmbedding::class], // List all tables
-    version = 1,                         // Database version
+    entities = [ImageEmbedding::class, ImageEntity::class], // List all tables
+    version = 3,                         // Database version - incremented to force rebuild
     exportSchema = false                 // Don't export schema (simplifies build)
 )
 @TypeConverters(Converters::class) // <-- Tell Room to use our converter
@@ -21,6 +21,11 @@ abstract class AppDatabase : RoomDatabase() {
      * Connects the database to the DAO.
      */
     abstract fun imageEmbeddingDao(): ImageEmbeddingDao
+    
+    /**
+     * Connects to the image tracking DAO.
+     */
+    abstract fun imageDao(): ImageDao
 
     /**
      * A companion object to provide a singleton instance of the database.

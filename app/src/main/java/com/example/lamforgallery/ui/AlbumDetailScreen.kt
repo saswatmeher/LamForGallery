@@ -32,6 +32,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.flow.distinctUntilChanged
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import androidx.compose.foundation.ExperimentalFoundationApi
 
 private const val ALBUM_PAGE_SIZE = 60
 
@@ -41,7 +42,10 @@ data class AlbumDetailState(
     val isLoading: Boolean = false,
     val canLoadMore: Boolean = true,
     val page: Int = 0,
-    val albumName: String = ""
+    val albumName: String = "",
+    val selectedPhotos: Set<String> = emptySet(),
+    val isSelectionMode: Boolean = false,
+    val showDeleteDialog: Boolean = false
 )
 
 // --- ViewModel ---
@@ -99,15 +103,81 @@ class AlbumDetailViewModel(
             }
         }
     }
+
+    fun toggleSelection(photoPath: String) {
+        _uiState.update { current ->
+            val newSelection = if (current.selectedPhotos.contains(photoPath)) {
+                current.selectedPhotos - photoPath
+            } else {
+                current.selectedPhotos + photoPath
+            }
+            current.copy(
+                selectedPhotos = newSelection,
+                isSelectionMode = newSelection.isNotEmpty()
+            )
+        }
+    }
+
+    fun enterSelectionMode(photoPath: String) {
+        _uiState.update {
+            it.copy(
+                selectedPhotos = setOf(photoPath),
+                isSelectionMode = true
+            )
+        }
+    }
+
+    fun clearSelection() {
+        _uiState.update {
+            it.copy(
+                selectedPhotos = emptySet(),
+                isSelectionMode = false
+            )
+        }
+    }
+
+    fun showDeleteConfirmation() {
+        _uiState.update { it.copy(showDeleteDialog = true) }
+    }
+
+    fun dismissDeleteDialog() {
+        _uiState.update { it.copy(showDeleteDialog = false) }
+    }
+
+    fun deleteSelectedPhotos(onComplete: () -> Unit = {}) {
+        val photosToDelete = _uiState.value.selectedPhotos.toList()
+        if (photosToDelete.isEmpty()) return
+
+        viewModelScope.launch {
+            try {
+                // Move to trash instead of permanent delete
+                galleryTools.moveToTrash(photosToDelete)
+                _uiState.update { current ->
+                    current.copy(
+                        photos = current.photos.filterNot { it in photosToDelete },
+                        selectedPhotos = emptySet(),
+                        isSelectionMode = false,
+                        showDeleteDialog = false
+                    )
+                }
+                // Call the completion callback after successful deletion
+                onComplete()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete photos", e)
+                _uiState.update { it.copy(showDeleteDialog = false) }
+            }
+        }
+    }
 }
 
 // --- Composable UI ---
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun AlbumDetailScreen(
     albumName: String,
     viewModel: AlbumDetailViewModel,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onPhotosDeleted: () -> Unit = {}
 ) {
     // Load the album when the screen first appears
     LaunchedEffect(albumName) {
@@ -136,14 +206,28 @@ fun AlbumDetailScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(uiState.albumName) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+            if (uiState.isSelectionMode) {
+                SelectionTopBar(
+                    selectedCount = uiState.selectedPhotos.size,
+                    onClearSelection = { viewModel.clearSelection() }
+                )
+            } else {
+                TopAppBar(
+                    title = { Text(uiState.albumName) },
+                    navigationIcon = {
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
                     }
-                }
-            )
+                )
+            }
+        },
+        floatingActionButton = {
+            if (uiState.isSelectionMode && uiState.selectedPhotos.isNotEmpty()) {
+                SelectionActionButtons(
+                    onDelete = { viewModel.showDeleteConfirmation() }
+                )
+            }
         }
     ) { paddingValues ->
         Box(
@@ -165,13 +249,18 @@ fun AlbumDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(uiState.photos, key = { it }) { photoUri ->
-                        AsyncImage(
-                            model = photoUri,
-                            contentDescription = "Album Photo",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .aspectRatio(1f)
-                                .fillMaxWidth()
+                        SelectablePhotoItem(
+                            photoPath = photoUri,
+                            isSelected = uiState.selectedPhotos.contains(photoUri),
+                            isSelectionMode = uiState.isSelectionMode,
+                            onPhotoClick = {
+                                if (uiState.isSelectionMode) {
+                                    viewModel.toggleSelection(photoUri)
+                                }
+                            },
+                            onPhotoLongClick = {
+                                viewModel.enterSelectionMode(photoUri)
+                            }
                         )
                     }
 
@@ -189,6 +278,17 @@ fun AlbumDetailScreen(
                     }
                 }
             }
+        }
+        
+        // Show delete confirmation dialog
+        if (uiState.showDeleteDialog) {
+            DeleteConfirmationDialog(
+                itemCount = uiState.selectedPhotos.size,
+                onConfirm = { 
+                    viewModel.deleteSelectedPhotos(onComplete = onPhotosDeleted)
+                },
+                onDismiss = { viewModel.dismissDeleteDialog() }
+            )
         }
     }
 }

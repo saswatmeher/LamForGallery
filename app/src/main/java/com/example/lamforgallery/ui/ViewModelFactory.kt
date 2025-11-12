@@ -28,10 +28,6 @@ class ViewModelFactory(
         Gson()
     }
 
-    private val galleryTools: GalleryTools by lazy {
-        GalleryTools(application.contentResolver)
-    }
-
     private val appDatabase: AppDatabase by lazy {
         AppDatabase.getDatabase(application)
     }
@@ -39,6 +35,18 @@ class ViewModelFactory(
     private val imageEmbeddingDao: ImageEmbeddingDao by lazy {
         appDatabase.imageEmbeddingDao()
     }
+
+    private val imageDao by lazy {
+        appDatabase.imageDao()
+    }
+
+    private val galleryTools: GalleryTools by lazy {
+        GalleryTools(application.contentResolver, imageDao)
+    }
+
+    // Expose for MainActivity
+    fun provideGalleryTools(): GalleryTools = galleryTools
+    fun provideImageDao() = imageDao
 
     private val imageEncoder: ImageEncoder by lazy {
         ImageEncoder(application)

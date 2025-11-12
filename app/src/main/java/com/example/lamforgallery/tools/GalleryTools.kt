@@ -13,18 +13,95 @@ import android.util.Log
 import android.util.Size
 import androidx.annotation.RequiresApi
 import com.example.lamforgallery.ui.PermissionType
+import com.example.lamforgallery.database.ImageDao
+import com.example.lamforgallery.database.ImageEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.OutputStream
-import android.content.ContentResolver // Import ContentResolver
+import android.content.ContentResolver
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 /**
  * This class contains the *real* Kotlin implementations for all
  * agent tools and gallery-reading functions.
  */
-class GalleryTools(private val resolver: ContentResolver) {
+class GalleryTools(
+    private val resolver: ContentResolver,
+    private val imageDao: ImageDao
+) {
 
     private val TAG = "GalleryTools"
+
+    // --- DATABASE SYNC ---
+    
+    /**
+     * Syncs MediaStore images to our database.
+     * This should be called when the app starts or when permissions are granted.
+     */
+    suspend fun syncMediaStoreToDatabase() {
+        Log.d(TAG, "Syncing MediaStore to database...")
+        withContext(Dispatchers.IO) {
+            try {
+                val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                val projection = arrayOf(
+                    MediaStore.Images.Media._ID,
+                    MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    MediaStore.Images.Media.DATE_TAKEN,
+                    MediaStore.Images.Media.DATE_ADDED
+                )
+                
+                val imagesToInsert = mutableListOf<ImageEntity>()
+                
+                resolver.query(collection, projection, null, null, "${MediaStore.Images.Media.DATE_TAKEN} DESC")?.use { cursor ->
+                    val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                    val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+                    val bucketColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+                    val pathColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
+                    val dateTakenColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
+                    val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+                    
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(idColumn)
+                        val displayName = cursor.getString(nameColumn) ?: "unknown"
+                        val albumName = cursor.getString(bucketColumn) ?: "Camera"
+                        val relativePath = cursor.getString(pathColumn) ?: ""
+                        val dateTaken = cursor.getLong(dateTakenColumn)
+                        val dateAdded = cursor.getLong(dateAddedColumn) * 1000 // Convert to millis
+                        
+                        val uri = ContentUris.withAppendedId(collection, id).toString()
+                        
+                        // Check if already exists in database
+                        val existingUri = imageDao.getImageByUri(uri)
+                        if (existingUri == null) {
+                            imagesToInsert.add(
+                                ImageEntity(
+                                    uri = uri,
+                                    displayName = displayName,
+                                    albumName = albumName,
+                                    relativePath = relativePath,
+                                    dateTaken = dateTaken,
+                                    dateAdded = dateAdded
+                                )
+                            )
+                        }
+                    }
+                }
+                
+                if (imagesToInsert.isNotEmpty()) {
+                    imageDao.insertImages(imagesToInsert)
+                    Log.d(TAG, "Synced ${imagesToInsert.size} new images to database")
+                } else {
+                    Log.d(TAG, "Database is up to date")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to sync MediaStore to database", e)
+            }
+        }
+    }
 
     // --- AGENT TOOL IMPLEMENTATIONS ---
 
@@ -64,6 +141,92 @@ class GalleryTools(private val resolver: ContentResolver) {
         Log.d(TAG, "AGENT REQUESTED DELETE for: $photoUris")
         val uris = photoUris.map { Uri.parse(it) }
         return MediaStore.createDeleteRequest(resolver, uris).intentSender
+    }
+
+    /**
+     * Moves photos to trash by updating database flag.
+     * No file system changes needed - just marks as trashed in database.
+     */
+    suspend fun moveToTrash(photoUris: List<String>): Boolean {
+        Log.d(TAG, "UI REQUESTED MOVE TO TRASH for: $photoUris")
+        return withContext(Dispatchers.IO) {
+            try {
+                val timestamp = System.currentTimeMillis()
+                imageDao.updateTrashStatus(photoUris, isTrashed = true, timestamp = timestamp)
+                Log.d(TAG, "Successfully moved ${photoUris.size} photos to trash in database")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to move photos to trash", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Permanently deletes photos from database and MediaStore.
+     */
+    suspend fun deletePhotos(photoUris: List<String>): Boolean {
+        Log.d(TAG, "UI REQUESTED PERMANENT DELETE for: $photoUris")
+        return withContext(Dispatchers.IO) {
+            try {
+                // Delete from MediaStore
+                var deletedCount = 0
+                for (uriString in photoUris) {
+                    val uri = Uri.parse(uriString)
+                    try {
+                        val deleted = resolver.delete(uri, null, null)
+                        if (deleted > 0) {
+                            deletedCount++
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to delete from MediaStore: $uriString", e)
+                    }
+                }
+                
+                // Delete from database
+                imageDao.deleteImages(photoUris)
+                
+                Log.d(TAG, "Successfully deleted ${deletedCount} photos from MediaStore and database")
+                deletedCount == photoUris.size
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete photos", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Restores photos from trash by updating database flag.
+     */
+    suspend fun restoreFromTrash(photoUris: List<String>): Boolean {
+        Log.d(TAG, "UI REQUESTED RESTORE FROM TRASH for: $photoUris")
+        return withContext(Dispatchers.IO) {
+            try {
+                imageDao.updateTrashStatus(photoUris, isTrashed = false, timestamp = 0)
+                Log.d(TAG, "Successfully restored ${photoUris.size} photos from trash")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to restore photos from trash", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Moves photos to a different album by updating database.
+     */
+    suspend fun movePhotosToAlbum(photoUris: List<String>, albumName: String): Boolean {
+        Log.d(TAG, "UI REQUESTED MOVE to album: $albumName for: $photoUris")
+        return withContext(Dispatchers.IO) {
+            try {
+                imageDao.updateAlbum(photoUris, albumName)
+                Log.d(TAG, "Successfully moved ${photoUris.size} photos to album $albumName")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to move photos to album", e)
+                false
+            }
+        }
     }
 
     /**
@@ -199,152 +362,97 @@ class GalleryTools(private val resolver: ContentResolver) {
     )
 
     /**
-     * Fetches all unique albums (folders) from the MediaStore.
-     * --- THIS VERSION IS FIXED ---
+     * Fetches all unique albums (folders) from the database.
      */
     suspend fun getAlbums(): List<Album> {
-        Log.d(TAG, "Fetching all albums")
-        val albums = mutableMapOf<String, Album>()
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-
-        val projection = arrayOf(
-            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Images.Media._ID,
-            "COUNT(${MediaStore.Images.Media._ID}) AS photo_count"
-        )
-
-        // --- FIX: Use Bundle for robust GROUP BY query ---
-        val queryArgs = Bundle().apply {
-            // This is the SQL: SELECT ... FROM ... WHERE BUCKET_DISPLAY_NAME IS NOT NULL GROUP BY BUCKET_DISPLAY_NAME
-            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} IS NOT NULL")
-            putStringArray(ContentResolver.QUERY_ARG_GROUP_COLUMNS, arrayOf(MediaStore.Images.Media.BUCKET_DISPLAY_NAME))
-            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} ASC")
-        }
-
+        Log.d(TAG, "Fetching all albums from database")
         return withContext(Dispatchers.IO) {
             try {
-                resolver.query(collection, projection, queryArgs, null)?.use { cursor ->
-                    val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
-                    val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                    val countColumn = cursor.getColumnIndexOrThrow("photo_count")
-
-                    while (cursor.moveToNext()) {
-                        val name = cursor.getString(nameColumn)
-                        val id = cursor.getLong(idColumn)
-                        val count = cursor.getInt(countColumn)
-
-                        val coverUri = ContentUris.withAppendedId(collection, id).toString()
-
-                        albums[name] = Album(name = name, coverUri = coverUri, photoCount = count)
-                    }
+                val albumsInfo = imageDao.getAlbumsWithCount()
+                val albums = mutableListOf<Album>()
+                
+                for (albumInfo in albumsInfo) {
+                    // Get one photo from this album as cover
+                    val photos = imageDao.getImagesByAlbum(albumInfo.albumName, limit = 1, offset = 0)
+                    val coverUri = photos.firstOrNull()?.uri ?: ""
+                    
+                    albums.add(
+                        Album(
+                            name = albumInfo.albumName,
+                            coverUri = coverUri,
+                            photoCount = albumInfo.photoCount
+                        )
+                    )
                 }
+                
+                Log.d(TAG, "Found ${albums.size} albums from database.")
+                albums
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to use GROUP BY query for albums, using fallback. ${e.message}")
-                return@withContext getAlbumsFallback() // Keep fallback just in case
-            }
-            Log.d(TAG, "Found ${albums.size} albums.")
-            albums.values.toList()
-        }
-    }
-
-    private suspend fun getAlbumsFallback(): List<Album> {
-        // ... (This function remains the same as you had it) ...
-        val albums = mutableMapOf<String, MutableList<String>>()
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
-        val sortOrder = "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} ASC, ${MediaStore.Images.Media.DATE_TAKEN} DESC"
-
-        return withContext(Dispatchers.IO) {
-            resolver.query(collection, projection, null, null, sortOrder)?.use { cursor ->
-                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val bucketColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
-
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idColumn)
-                    val bucketName = cursor.getString(bucketColumn) ?: "Unknown"
-                    val uri = ContentUris.withAppendedId(collection, id).toString()
-
-                    if (!albums.containsKey(bucketName)) {
-                        albums[bucketName] = mutableListOf()
-                    }
-                    albums[bucketName]?.add(uri)
-                }
-            }
-
-            albums.map { (name, uris) ->
-                Album(name = name, coverUri = uris.first(), photoCount = uris.size)
+                Log.e(TAG, "Failed to get albums from database", e)
+                emptyList()
             }
         }
     }
 
     /**
      * Fetches all photos, with pagination.
-     * --- THIS VERSION IS FIXED ---
+     * Queries database and filters out trashed photos.
      */
     suspend fun getPhotos(page: Int, pageSize: Int): List<String> {
-        Log.d(TAG, "Fetching photos page: $page, size: $pageSize")
-        val photoUris = mutableListOf<String>()
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(MediaStore.Images.Media._ID)
-
-        // --- FIX: Use Bundle for robust pagination query ---
-        val queryArgs = Bundle().apply {
-            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.Images.Media.DATE_TAKEN} DESC")
-            putInt(ContentResolver.QUERY_ARG_LIMIT, pageSize)
-            putInt(ContentResolver.QUERY_ARG_OFFSET, page * pageSize)
-        }
-
+        Log.d(TAG, "Fetching photos from database, page: $page, size: $pageSize")
         return withContext(Dispatchers.IO) {
-            resolver.query(collection, projection, queryArgs, null)?.use { cursor ->
-                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idColumn)
-                    val uri = ContentUris.withAppendedId(collection, id)
-                    photoUris.add(uri.toString())
-                }
+            try {
+                val offset = page * pageSize
+                val images = imageDao.getAllImages(limit = pageSize, offset = offset)
+                val uris = images.map { it.uri }
+                Log.d(TAG, "Found ${uris.size} photos for page $page from database.")
+                uris
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get photos from database", e)
+                emptyList()
             }
-            Log.d(TAG, "Found ${photoUris.size} photos for page $page.")
-            photoUris
         }
     }
 
-    // --- NEW FUNCTION TO ADD ---
     /**
      * Fetches all photos *for a specific album*, with pagination.
+     * Queries database and filters out trashed photos.
      */
     suspend fun getPhotosForAlbum(albumName: String, page: Int, pageSize: Int): List<String> {
-        Log.d(TAG, "Fetching photos for album: $albumName, page: $page")
-        val photoUris = mutableListOf<String>()
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(MediaStore.Images.Media._ID)
-
-        // --- This is the main difference ---
-        val selection = "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ?"
-        val selectionArgs = arrayOf(albumName)
-        // --- End difference ---
-
-        val queryArgs = Bundle().apply {
-            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
-            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
-            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.Images.Media.DATE_TAKEN} DESC")
-            putInt(ContentResolver.QUERY_ARG_LIMIT, pageSize)
-            putInt(ContentResolver.QUERY_ARG_OFFSET, page * pageSize)
-        }
-
+        Log.d(TAG, "Fetching photos for album from database: $albumName, page: $page")
         return withContext(Dispatchers.IO) {
-            resolver.query(collection, projection, queryArgs, null)?.use { cursor ->
-                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idColumn)
-                    val uri = ContentUris.withAppendedId(collection, id)
-                    photoUris.add(uri.toString())
-                }
+            try {
+                val offset = page * pageSize
+                val images = imageDao.getImagesByAlbum(albumName, limit = pageSize, offset = offset)
+                val uris = images.map { it.uri }
+                Log.d(TAG, "Found ${uris.size} photos for $albumName from database")
+                uris
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get photos for album from database", e)
+                emptyList()
             }
-            Log.d(TAG, "Found ${photoUris.size} photos for $albumName")
-            photoUris
         }
     }
-    // --- END NEW FUNCTION ---
+
+    /**
+     * Fetches only trashed photos from database.
+     * Used for the Trash album view.
+     */
+    suspend fun getTrashPhotos(page: Int = 0, pageSize: Int = 100): List<String> {
+        Log.d(TAG, "Fetching trash photos from database, page: $page")
+        return withContext(Dispatchers.IO) {
+            try {
+                val offset = page * pageSize
+                val images = imageDao.getTrashedImages(limit = pageSize, offset = offset)
+                val uris = images.map { it.uri }
+                Log.d(TAG, "Found ${uris.size} trashed photos from database")
+                uris
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get trashed photos from database", e)
+                emptyList()
+            }
+        }
+    }
 
     // --- PRIVATE HELPER FUNCTIONS ---
 

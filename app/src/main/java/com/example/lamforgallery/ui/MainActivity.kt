@@ -169,14 +169,28 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Helper to load data into all main ViewModels.
+     * Syncs MediaStore to database first, then loads photos and albums.
      */
     private fun loadAllViewModels() {
-        photosViewModel.loadPhotos()
-        albumsViewModel.loadAlbums()
+        // Sync MediaStore to database first
+        lifecycleScope.launch {
+            try {
+                val galleryTools = (factory as ViewModelFactory).provideGalleryTools()
+                galleryTools.syncMediaStoreToDatabase()
+                
+                // After sync, load the data
+                photosViewModel.loadPhotos()
+                albumsViewModel.loadAlbums()
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to sync database", e)
+                // Still try to load even if sync fails
+                photosViewModel.loadPhotos()
+                albumsViewModel.loadAlbums()
+            }
+        }
         // AgentViewModel loads on its own, no need to call it here.
     }
 }
-
 
 /**
  * Sets up the app's navigation graph.
@@ -234,7 +248,11 @@ fun AppNavigationHost(
             AlbumDetailScreen(
                 albumName = albumName,
                 viewModel = albumDetailViewModel,
-                onNavigateBack = { navController.popBackStack() } // Standard back action
+                onNavigateBack = { navController.popBackStack() }, // Standard back action
+                onPhotosDeleted = { 
+                    albumsViewModel.loadAlbums()
+                    photosViewModel.refreshPhotos()
+                }
             )
         }
     }
@@ -294,7 +312,10 @@ fun AppShell(
         Box(modifier = Modifier.padding(paddingValues)) {
             // Switch content based on the selected tab
             when (selectedTab) {
-                "photos" -> PhotosScreen(viewModel = photosViewModel)
+                "photos" -> PhotosScreen(
+                    viewModel = photosViewModel,
+                    onPhotosDeleted = { albumsViewModel.loadAlbums() }
+                )
                 "albums" -> AlbumsScreen(
                     viewModel = albumsViewModel,
                     onAlbumClick = onAlbumClick // Pass the navigation click
