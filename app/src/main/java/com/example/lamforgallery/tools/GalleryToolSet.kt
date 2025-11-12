@@ -15,7 +15,10 @@ import kotlinx.serialization.Serializable
  * Wraps GalleryTools functionality with Koog's annotation-based tool system.
  */
 @LLMDescription("Tools for searching, organizing, and editing photos in the device gallery")
-class GalleryToolSet(private val galleryTools: GalleryTools) : ToolSet {
+class GalleryToolSet(
+    private val galleryTools: GalleryTools,
+    private val onSearchResults: ((List<String>) -> Unit)? = null
+) : ToolSet {
 
     private val TAG = "GalleryToolSet"
 
@@ -41,6 +44,10 @@ class GalleryToolSet(private val galleryTools: GalleryTools) : ToolSet {
         return try {
             val uris = galleryTools.searchPhotosBySemantic(args.query, args.limit, args.threshold)
             Log.d(TAG, "Search found ${uris.size} photos for query: ${args.query}")
+            
+            // Update UI with search results via callback
+            onSearchResults?.invoke(uris)
+            
             """{"photoUris": ${uris.map { "\"$it\"" }}, "count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
         } catch (e: Exception) {
             Log.e(TAG, "Error searching photos", e)

@@ -12,7 +12,6 @@ import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
 import androidx.annotation.RequiresApi
-import com.example.lamforgallery.ui.PermissionType
 import com.example.lamforgallery.database.ImageDao
 import com.example.lamforgallery.database.ImageEntity
 import com.example.lamforgallery.database.ImageEmbeddingDao

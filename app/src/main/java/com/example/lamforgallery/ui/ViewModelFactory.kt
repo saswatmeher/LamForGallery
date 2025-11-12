@@ -73,14 +73,7 @@ class ViewModelFactory(
         return when {
             // When AgentViewModel is requested...
             modelClass.isAssignableFrom(AgentViewModel::class.java) -> {
-                AgentViewModel(
-                    application,
-                    galleryTools,
-                    gson,
-                    imageEmbeddingDao,
-                    clipTokenizer,
-                    textEncoder
-                ) as T
+                AgentViewModel(application, galleryTools) as T
             }
 
             // When PhotosViewModel is requested...

@@ -22,7 +22,9 @@ import androidx.compose.material.icons.filled.Search // --- ADDED ---
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable // <-- NEW IMPORT
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -79,40 +81,10 @@ class MainActivity : ComponentActivity() {
         }
     // --- END READ PERMISSION ---
 
-
-    // --- MODIFY PERMISSIONS (GENERALIZED) ---
-    private var currentPermissionType: PermissionType? = null
-    private val permissionRequestLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.StartIntentSenderForResult()
-        ) { activityResult ->
-            val type = currentPermissionType
-            if (type == null) {
-                Log.e(TAG, "permissionRequestLauncher result but currentPermissionType is null!")
-                return@registerForActivityResult
-            }
-
-            val wasSuccessful = activityResult.resultCode == RESULT_OK
-            Log.d(TAG, "Permission result for $type: ${if (wasSuccessful) "GRANTED" else "DENIED"}")
-            agentViewModel.handlePermissionResult(wasSuccessful) // Pass to Agent VM
-            currentPermissionType = null
-        }
-    // --- END MODIFY PERMISSIONS ---
-
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         checkAndRequestPermission()
-
-        lifecycleScope.launch {
-            agentViewModel.galleryDidChange.collect {
-                Log.d(TAG, "Agent reported gallery change. Refreshing Photos and Albums.")
-                photosViewModel.loadPhotos() // Refresh photos
-                albumsViewModel.loadAlbums() // Refresh albums
-            }
-        }
-
 
         setContent {
             MaterialTheme {
@@ -129,15 +101,8 @@ class MainActivity : ComponentActivity() {
                             photosViewModel = photosViewModel,
                             albumsViewModel = albumsViewModel,
                             searchViewModel = searchViewModel,
-                            embeddingViewModel = embeddingViewModel,
+                            embeddingViewModel = embeddingViewModel
                             // --- END PASS ---
-                            onLaunchPermissionRequest = { intentSender, type ->
-                                Log.d(TAG, "Launching permissionRequestLauncher for $type...")
-                                currentPermissionType = type
-                                permissionRequestLauncher.launch(
-                                    IntentSenderRequest.Builder(intentSender).build()
-                                )
-                            }
                         )
                     } else {
                         PermissionDeniedScreen {
@@ -206,9 +171,8 @@ fun AppNavigationHost(
     photosViewModel: PhotosViewModel,
     albumsViewModel: AlbumsViewModel,
     searchViewModel: SearchViewModel,
-    embeddingViewModel: EmbeddingViewModel,
+    embeddingViewModel: EmbeddingViewModel
     // --- END RECEIVE ---
-    onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
 ) {
     val navController = rememberNavController()
 
@@ -235,8 +199,7 @@ fun AppNavigationHost(
                 // Pass navigation/permission helpers down
                 onAlbumClick = { encodedAlbumName ->
                     navController.navigate("album_detail/$encodedAlbumName")
-                },
-                onLaunchPermissionRequest = onLaunchPermissionRequest
+                }
             )
         }
 
@@ -279,9 +242,8 @@ fun AppShell(
     embeddingViewModel: EmbeddingViewModel,
     selectedTab: String,
     onTabSelected: (String) -> Unit,
-    onAlbumClick: (String) -> Unit,
+    onAlbumClick: (String) -> Unit
     // --- END RECEIVE ---
-    onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
 ) {
     // Note: We no longer create ViewModels here! We use the ones passed in.
 
@@ -339,11 +301,33 @@ fun AppShell(
                         photosViewModel.refreshPhotos()
                     }
                 )
-                "agent" -> AgentScreen(
-                    viewModel = agentViewModel,
-                    onLaunchPermissionRequest = onLaunchPermissionRequest
-                )
+                "agent" -> AgentScreen(viewModel = agentViewModel)
                 "indexing" -> EmbeddingScreen(viewModel = embeddingViewModel)
+            }
+        }
+    }
+}
+
+@Composable
+fun PermissionDeniedScreen(onRequestPermission: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "Permission Required",
+                style = MaterialTheme.typography.headlineMedium
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "This app needs permission to read your photos to work.",
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(onClick = onRequestPermission) {
+                Text("Grant Permission")
             }
         }
     }
