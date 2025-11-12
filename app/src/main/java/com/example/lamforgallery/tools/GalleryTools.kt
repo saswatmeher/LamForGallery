@@ -15,6 +15,10 @@ import androidx.annotation.RequiresApi
 import com.example.lamforgallery.ui.PermissionType
 import com.example.lamforgallery.database.ImageDao
 import com.example.lamforgallery.database.ImageEntity
+import com.example.lamforgallery.database.ImageEmbeddingDao
+import com.example.lamforgallery.ml.ClipTokenizer
+import com.example.lamforgallery.ml.TextEncoder
+import com.example.lamforgallery.utils.SimilarityUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.OutputStream
@@ -29,7 +33,10 @@ import java.io.FileOutputStream
  */
 class GalleryTools(
     private val resolver: ContentResolver,
-    private val imageDao: ImageDao
+    private val imageDao: ImageDao,
+    private val imageEmbeddingDao: ImageEmbeddingDao? = null,
+    private val clipTokenizer: ClipTokenizer? = null,
+    private val textEncoder: TextEncoder? = null
 ) {
 
     private val TAG = "GalleryTools"
@@ -119,6 +126,63 @@ class GalleryTools(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to search photos", e)
                 emptyList()
+            }
+        }
+    }
+
+    /**
+     * Searches for photos using semantic/AI-powered search with CLIP embeddings.
+     * Falls back to filename search if embeddings are not available.
+     */
+    suspend fun searchPhotosBySemantic(
+        query: String, 
+        limit: Int = 20, 
+        threshold: Float = 0.2f
+    ): List<String> {
+        // Check if semantic search is available
+        if (imageEmbeddingDao == null || clipTokenizer == null || textEncoder == null) {
+            Log.w(TAG, "Semantic search not available, falling back to filename search")
+            return searchPhotos(query)
+        }
+
+        Log.d(TAG, "Semantic search for: $query")
+        return withContext(Dispatchers.IO) {
+            try {
+                // Tokenize the query
+                val tokenIds = clipTokenizer.tokenize(query)
+                
+                // Generate text embedding
+                val queryEmbedding = withContext(Dispatchers.Default) {
+                    textEncoder.encode(tokenIds)
+                }
+                
+                // Get all embeddings from database
+                val allEmbeddings = imageEmbeddingDao.getAllEmbeddings()
+                
+                if (allEmbeddings.isEmpty()) {
+                    Log.w(TAG, "No embeddings available, falling back to filename search")
+                    return@withContext searchPhotos(query)
+                }
+                
+                // Calculate similarities
+                val results = allEmbeddings
+                    .map { embedding ->
+                        val similarity = SimilarityUtil.cosineSimilarity(
+                            queryEmbedding,
+                            embedding.embedding
+                        )
+                        Pair(embedding.uri, similarity)
+                    }
+                    .filter { it.second >= threshold }
+                    .sortedByDescending { it.second }
+                    .take(limit)
+                    .map { it.first }
+                
+                Log.d(TAG, "Semantic search found ${results.size} matching photos")
+                results
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to perform semantic search, falling back to filename search", e)
+                searchPhotos(query)
             }
         }
     }

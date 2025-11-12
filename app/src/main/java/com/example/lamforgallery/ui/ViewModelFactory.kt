@@ -40,8 +40,22 @@ class ViewModelFactory(
         appDatabase.imageDao()
     }
 
+    private val clipTokenizer: ClipTokenizer by lazy {
+        ClipTokenizer(application)
+    }
+
+    private val textEncoder: TextEncoder by lazy {
+        TextEncoder(application)
+    }
+
     private val galleryTools: GalleryTools by lazy {
-        GalleryTools(application.contentResolver, imageDao)
+        GalleryTools(
+            resolver = application.contentResolver,
+            imageDao = imageDao,
+            imageEmbeddingDao = imageEmbeddingDao,
+            clipTokenizer = clipTokenizer,
+            textEncoder = textEncoder
+        )
     }
 
     // Expose for MainActivity
@@ -50,14 +64,6 @@ class ViewModelFactory(
 
     private val imageEncoder: ImageEncoder by lazy {
         ImageEncoder(application)
-    }
-
-    private val clipTokenizer: ClipTokenizer by lazy {
-        ClipTokenizer(application)
-    }
-
-    private val textEncoder: TextEncoder by lazy {
-        TextEncoder(application)
     }
 
     // --- End Dependencies ---

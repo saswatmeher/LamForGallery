@@ -68,11 +68,24 @@ sealed class AgentStatus {
 data class AgentUiState(
     val messages: List<ChatMessage> = emptyList(),
     val currentStatus: AgentStatus = AgentStatus.Idle,
+    val displayedImages: List<String> = emptyList(),
     val selectedImageUris: Set<String> = emptySet(),
+    val isInSelectionMode: Boolean = false,
+    val pendingAction: PendingAction? = null,
     val isSelectionSheetOpen: Boolean = false,
     val selectionSheetUris: List<String> = emptyList(),
     val apiKey: String = ""
 )
+
+data class PendingAction(
+    val type: ActionType,
+    val itemCount: Int,
+    val message: String
+)
+
+enum class ActionType {
+    DELETE, MOVE, OTHER
+}
 
 enum class PermissionType { DELETE, WRITE }
 
@@ -209,8 +222,99 @@ class AgentViewModel(
             } else {
                 currentSelection + uri
             }
-            currentState.copy(selectedImageUris = newSelection)
+            currentState.copy(
+                selectedImageUris = newSelection,
+                isInSelectionMode = newSelection.isNotEmpty()
+            )
         }
+    }
+
+    fun enterSelectionMode(uri: String) {
+        _uiState.update {
+            it.copy(
+                selectedImageUris = setOf(uri),
+                isInSelectionMode = true
+            )
+        }
+    }
+
+    fun exitSelectionMode() {
+        _uiState.update {
+            it.copy(
+                selectedImageUris = emptySet(),
+                isInSelectionMode = false
+            )
+        }
+    }
+
+    private fun showImages(imageUris: List<String>, enterSelection: Boolean = false) {
+        Log.d(TAG, "showImages called with ${imageUris.size} URIs, enterSelection=$enterSelection")
+        
+        _uiState.update { currentState ->
+            val updatedState = currentState.copy(
+                displayedImages = imageUris,
+                isInSelectionMode = enterSelection,
+                selectedImageUris = if (enterSelection) imageUris.toSet() else emptySet()
+            )
+            Log.d(TAG, "Updated state - displayedImages: ${updatedState.displayedImages.size}")
+            updatedState
+        }
+    }
+
+    fun clearDisplayedImages() {
+        _uiState.update {
+            it.copy(
+                displayedImages = emptyList(),
+                selectedImageUris = emptySet(),
+                isInSelectionMode = false
+            )
+        }
+    }
+
+    fun setPendingAction(action: PendingAction) {
+        _uiState.update { it.copy(pendingAction = action) }
+    }
+
+    fun confirmPendingAction() {
+        val action = _uiState.value.pendingAction
+        val selected = _uiState.value.selectedImageUris.toList()
+        
+        _uiState.update { it.copy(pendingAction = null) }
+        
+        when (action?.type) {
+            ActionType.DELETE -> {
+                viewModelScope.launch {
+                    try {
+                        galleryTools.moveToTrash(selected)
+                        addMessage(ChatMessage(
+                            text = "Successfully deleted ${selected.size} photos.",
+                            sender = Sender.AGENT
+                        ))
+                        clearDisplayedImages()
+                    } catch (e: Exception) {
+                        addMessage(ChatMessage(
+                            text = "Failed to delete photos: ${e.message}",
+                            sender = Sender.ERROR
+                        ))
+                    }
+                }
+            }
+            else -> {
+                addMessage(ChatMessage(
+                    text = "Action confirmed.",
+                    sender = Sender.AGENT
+                ))
+            }
+        }
+    }
+
+    fun cancelPendingAction() {
+        _uiState.update { it.copy(pendingAction = null) }
+        addMessage(ChatMessage(
+            text = "Action cancelled.",
+            sender = Sender.AGENT
+        ))
+        exitSelectionMode()
     }
 
     // --- PERMISSION HANDLING ---
@@ -276,6 +380,10 @@ class AgentViewModel(
 
     // --- USER INPUT ---
 
+    fun sendMessage(input: String) {
+        sendUserInput(input)
+    }
+
     fun sendUserInput(input: String) {
         val currentState = _uiState.value
         if (currentState.currentStatus !is AgentStatus.Idle) {
@@ -320,19 +428,40 @@ class AgentViewModel(
                     if (response.contains("\"requiresPermission\": true")) {
                         handlePermissionResponse(response)
                     } else {
+                        // Log the full response for debugging
+                        Log.d(TAG, "Agent response: $response")
+                        
                         // Parse and display the response
-                        addMessage(ChatMessage(text = response, sender = Sender.AGENT))
                         
                         // Check if response contains photo URIs for display
-                        if (response.contains("photoUris")) {
-                            try {
-                                val uris = extractPhotoUris(response)
-                                if (uris.isNotEmpty()) {
-                                    openSelectionSheet(uris)
-                                }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to extract photo URIs", e)
+                        val uris = try {
+                            extractPhotoUris(response)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to extract photo URIs", e)
+                            emptyList()
+                        }
+                        
+                        Log.d(TAG, "Extracted ${uris.size} URIs from response")
+                        
+                        if (uris.isNotEmpty()) {
+                            // Display images in the top gallery
+                            showImages(uris, enterSelection = false)
+                            
+                            // Check if this is a delete/move request that needs confirmation
+                            if (response.contains("delete", ignoreCase = true) || 
+                                response.contains("remove", ignoreCase = true)) {
+                                // Enter selection mode for delete operations
+                                showImages(uris, enterSelection = true)
+                                setPendingAction(PendingAction(
+                                    type = ActionType.DELETE,
+                                    itemCount = uris.size,
+                                    message = "Are you sure you want to delete ${uris.size} photo(s)?"
+                                ))
                             }
+                            
+                            addMessage(ChatMessage(text = "Found ${uris.size} photos", sender = Sender.AGENT))
+                        } else {
+                            addMessage(ChatMessage(text = response, sender = Sender.AGENT))
                         }
                         
                         setStatus(AgentStatus.Idle)
@@ -373,7 +502,11 @@ class AgentViewModel(
                 |4. Creating collages
                 |5. Applying filters (grayscale, sepia)
                 |
-                |When a user asks to search for photos, use searchPhotos for filename-based search or searchPhotosBySemantic for content-based search (e.g., "sunset", "people smiling").
+                |Before calling any tool, first explain what you're about to do in a friendly way.
+                |For example: "Let me search for that...", "I'll delete those photos...", "Creating a collage..."
+                |
+                |The searchPhotos tool uses AI-powered semantic search to understand natural language queries.
+                |Users can search with descriptions like "sunset", "cat", "people smiling", or filenames.
                 |When you find photos, return the full JSON response so the user can see and select them.
                 |For operations that modify photos (delete, move), make sure to use the tools correctly and inform the user of the results.
                 |Be concise and helpful in your responses.""".trimMargin(),
@@ -453,10 +586,17 @@ class AgentViewModel(
     }
 
     private fun extractPhotoUris(response: String): List<String> {
+        Log.d(TAG, "Attempting to extract URIs from response")
+        
         val urisJson = extractJsonArray(response, "photoUris")
-        return urisJson.split(",")
+        Log.d(TAG, "Extracted JSON array content: $urisJson")
+        
+        val uris = urisJson.split(",")
             .map { it.trim('"', ' ') }
             .filter { it.isNotEmpty() && it.startsWith("content://") }
+        
+        Log.d(TAG, "Parsed ${uris.size} URIs")
+        return uris
     }
 
     private fun addMessage(message: ChatMessage) {

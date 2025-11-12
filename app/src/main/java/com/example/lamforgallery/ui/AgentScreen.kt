@@ -3,9 +3,11 @@ package com.example.lamforgallery.ui
 import android.content.IntentSender
 import android.util.Log
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -18,6 +20,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,11 +37,12 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 
 /**
- * This file now contains our entire Chat UI, decoupled from MainActivity.
- * NEW: It now includes the ModalBottomSheet for photo selection.
+ * Enhanced Agent Screen with split layout:
+ * - Top: Image gallery with selection support
+ * - Bottom: Chat interface with human-in-the-loop prompts
  */
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun AgentScreen(
     viewModel: AgentViewModel,
@@ -47,38 +52,7 @@ fun AgentScreen(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    // --- Bottom Sheet State ---
-    // We use a separate state for the sheet to show/hide it
-    val sheetState = rememberModalBottomSheetState()
-
-    // This is the "controller" for the sheet.
-    // When the VM state `isSelectionSheetOpen` changes to true, we `show()` the sheet.
-    // When the user dismisses it, `onDismissRequest` tells the VM to set it back to false.
-    if (uiState.isSelectionSheetOpen) {
-        ModalBottomSheet(
-            onDismissRequest = { viewModel.closeSelectionSheet() },
-            sheetState = sheetState
-        ) {
-            // This is the content *inside* the sheet
-            SelectionBottomSheet(
-                uris = uiState.selectionSheetUris,
-                onCancel = {
-                    coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
-                        viewModel.closeSelectionSheet()
-                    }
-                },
-                onConfirm = { selection ->
-                    coroutineScope.launch { sheetState.hide() }.invokeOnCompletion {
-                        viewModel.confirmSelection(selection)
-                    }
-                }
-            )
-        }
-    }
-    // --- End Bottom Sheet ---
-
-
-    // This effect will watch for a new RequiresPermission state
+    // Watch for permission requests
     LaunchedEffect(uiState.currentStatus) {
         val status = uiState.currentStatus
         if (status is AgentStatus.RequiresPermission) {
@@ -87,7 +61,7 @@ fun AgentScreen(
         }
     }
 
-    // This effect will auto-scroll to the bottom when a new message is added
+    // Auto-scroll chat to bottom on new messages
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             coroutineScope.launch {
@@ -96,52 +70,41 @@ fun AgentScreen(
         }
     }
 
-    Scaffold(
-        bottomBar = {
-            ChatInputBar(
-                status = uiState.currentStatus,
-                selectionCount = uiState.selectedImageUris.size,
-                apiKey = uiState.apiKey,
-                onApiKeyChange = { viewModel.setApiKey(it) },
-                onSend = { inputText ->
-                    viewModel.sendUserInput(inputText)
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Top Section: Image Gallery (40% of screen)
+        ImageGallerySection(
+            images = uiState.displayedImages,
+            selectedImages = uiState.selectedImageUris,
+            isSelectionMode = uiState.isInSelectionMode,
+            onImageClick = { uri ->
+                if (uiState.isInSelectionMode) {
+                    viewModel.toggleImageSelection(uri)
                 }
-            )
-        }
-    ) { paddingValues ->
-        // This is our main chat content area
-        LazyColumn(
-            state = listState,
+            },
+            onImageLongClick = { uri ->
+                if (!uiState.isInSelectionMode && uiState.displayedImages.isNotEmpty()) {
+                    viewModel.enterSelectionMode(uri)
+                }
+            },
             modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues) // Apply padding from the Scaffold
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.Bottom // Stick to bottom
-        ) {
-            // Add a spacer to push content up when list is short
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
+                .fillMaxWidth()
+                .weight(0.4f)
+        )
 
-            // Render each chat message
-            items(uiState.messages, key = { it.id }) { message ->
-                ChatMessageItem(
-                    message = message,
-                    isSelected = { uri -> uiState.selectedImageUris.contains(uri) },
-                    onToggleSelection = { uri -> viewModel.toggleImageSelection(uri) },
-                    // --- NEW: Pass the sheet-opening function ---
-                    onOpenSelectionSheet = { uris ->
-                        viewModel.openSelectionSheet(uris)
-                    }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-            }
+        Divider()
 
-            // Add a final spacer for padding at the bottom
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-        }
+        // Bottom Section: Chat Interface (60% of screen)
+        ChatSection(
+            messages = uiState.messages,
+            currentStatus = uiState.currentStatus,
+            listState = listState,
+            onSendMessage = { message -> viewModel.sendMessage(message) },
+            onConfirmAction = { viewModel.confirmPendingAction() },
+            onCancelAction = { viewModel.cancelPendingAction() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.6f)
+        )
     }
 }
 
@@ -531,6 +494,257 @@ fun PermissionDeniedScreen(onRequestPermission: () -> Unit) {
             Button(onClick = onRequestPermission) {
                 Text("Grant Permission")
             }
+        }
+    }
+}
+
+// ===== NEW COMPOSABLES FOR SPLIT LAYOUT =====
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ImageGallerySection(
+    images: List<String>,
+    selectedImages: Set<String>,
+    isSelectionMode: Boolean,
+    onImageClick: (String) -> Unit,
+    onImageLongClick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant)) {
+        if (images.isEmpty()) {
+            Text(
+                text = "Images will appear here",
+                modifier = Modifier.align(Alignment.Center),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 100.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(images, key = { it }) { uri ->
+                    SelectableImageItem(
+                        uri = uri,
+                        isSelected = selectedImages.contains(uri),
+                        isSelectionMode = isSelectionMode,
+                        onImageClick = { onImageClick(uri) },
+                        onImageLongClick = { onImageLongClick(uri) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SelectableImageItem(
+    uri: String,
+    isSelected: Boolean,
+    isSelectionMode: Boolean,
+    onImageClick: () -> Unit,
+    onImageLongClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(4.dp))
+            .combinedClickable(
+                onClick = onImageClick,
+                onLongClick = onImageLongClick
+            )
+    ) {
+        AsyncImage(
+            model = uri,
+            contentDescription = "Gallery Photo",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Selection indicator
+        if (isSelectionMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (isSelected) Color.Black.copy(alpha = 0.3f)
+                        else Color.Transparent
+                    )
+            )
+            Icon(
+                imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.Circle,
+                contentDescription = if (isSelected) "Selected" else "Not Selected",
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .size(24.dp)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatSection(
+    messages: List<ChatMessage>,
+    currentStatus: AgentStatus,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    onSendMessage: (String) -> Unit,
+    onConfirmAction: () -> Unit,
+    onCancelAction: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        // Chat messages area
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.Bottom
+        ) {
+            item { Spacer(modifier = Modifier.height(16.dp)) }
+
+            items(messages, key = { it.id }) { message ->
+                ChatBubble(message = message)
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            // Human-in-the-loop confirmation prompt
+            item {
+                val uiState by remember { mutableStateOf(currentStatus) }
+                if (uiState is AgentStatus.Loading) {
+                    val loadingStatus = uiState as AgentStatus.Loading
+                    if (loadingStatus.message.contains("confirm", ignoreCase = true)) {
+                        HumanInTheLoopPrompt(
+                            message = loadingStatus.message,
+                            onConfirm = onConfirmAction,
+                            onCancel = onCancelAction
+                        )
+                    }
+                }
+            }
+
+            item { Spacer(modifier = Modifier.height(16.dp)) }
+        }
+
+        // Input bar at the bottom
+        ChatInputField(
+            onSendMessage = onSendMessage,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+fun ChatBubble(message: ChatMessage) {
+    val alignment = if (message.sender == Sender.USER) Alignment.CenterEnd else Alignment.CenterStart
+    val backgroundColor = when (message.sender) {
+        Sender.USER -> MaterialTheme.colorScheme.primaryContainer
+        Sender.AGENT -> MaterialTheme.colorScheme.secondaryContainer
+        Sender.ERROR -> MaterialTheme.colorScheme.errorContainer
+    }
+    val textColor = when (message.sender) {
+        Sender.USER -> MaterialTheme.colorScheme.onPrimaryContainer
+        Sender.AGENT -> MaterialTheme.colorScheme.onSecondaryContainer
+        Sender.ERROR -> MaterialTheme.colorScheme.onErrorContainer
+    }
+
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = alignment
+    ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = backgroundColor,
+            modifier = Modifier.widthIn(max = 280.dp)
+        ) {
+            Text(
+                text = message.text,
+                modifier = Modifier.padding(12.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = textColor
+            )
+        }
+    }
+}
+
+@Composable
+fun HumanInTheLoopPrompt(
+    message: String,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onCancel) {
+                    Text("Cancel")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(onClick = onConfirm) {
+                    Text("Confirm")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatInputField(
+    onSendMessage: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var text by remember { mutableStateOf("") }
+
+    Row(
+        modifier = modifier
+            .padding(16.dp)
+            .fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            placeholder = { Text("Ask me anything about your photos...") },
+            modifier = Modifier.weight(1f),
+            maxLines = 3
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Button(
+            onClick = {
+                if (text.isNotBlank()) {
+                    onSendMessage(text)
+                    text = ""
+                }
+            },
+            enabled = text.isNotBlank()
+        ) {
+            Text("Send")
         }
     }
 }

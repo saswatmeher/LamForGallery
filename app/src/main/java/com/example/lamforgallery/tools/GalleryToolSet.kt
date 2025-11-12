@@ -21,8 +21,12 @@ class GalleryToolSet(private val galleryTools: GalleryTools) : ToolSet {
 
     @Serializable
     data class SearchPhotosArgs(
-        @property:LLMDescription("The search query to find photos by filename")
-        val query: String
+        @property:LLMDescription("The search query - can be a filename or natural language description (e.g., 'sunset', 'people smiling', 'cat')")
+        val query: String,
+        @property:LLMDescription("Maximum number of results to return (default: 20)")
+        val limit: Int = 20,
+        @property:LLMDescription("Minimum similarity threshold for semantic search (0.0 to 1.0, default: 0.2)")
+        val threshold: Float = 0.2f
     )
 
     @Serializable
@@ -32,10 +36,10 @@ class GalleryToolSet(private val galleryTools: GalleryTools) : ToolSet {
     )
 
     @Tool
-    @LLMDescription("Searches for photos in the gallery by filename. Returns a list of photo URIs matching the query.")
+    @LLMDescription("Searches for photos using AI-powered semantic search. Can understand natural language queries like 'sunset', 'people smiling', 'cat photos'. Falls back to filename search if AI embeddings are not available.")
     suspend fun searchPhotos(args: SearchPhotosArgs): String {
         return try {
-            val uris = galleryTools.searchPhotos(args.query)
+            val uris = galleryTools.searchPhotosBySemantic(args.query, args.limit, args.threshold)
             Log.d(TAG, "Search found ${uris.size} photos for query: ${args.query}")
             """{"photoUris": ${uris.map { "\"$it\"" }}, "count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
         } catch (e: Exception) {

@@ -43,7 +43,8 @@ data class SearchScreenState(
     val hasSearched: Boolean = false,
     val selectedPhotos: Set<String> = emptySet(),
     val isSelectionMode: Boolean = false,
-    val showDeleteDialog: Boolean = false
+    val showDeleteDialog: Boolean = false,
+    val threshold: Float = 0.2f  // Default threshold for semantic search
 )
 
 class SearchViewModel(
@@ -59,6 +60,10 @@ class SearchViewModel(
         _uiState.update { it.copy(searchQuery = query) }
     }
 
+    fun updateThreshold(threshold: Float) {
+        _uiState.update { it.copy(threshold = threshold) }
+    }
+
     fun performSearch() {
         val query = _uiState.value.searchQuery.trim()
         if (query.isEmpty()) return
@@ -67,14 +72,19 @@ class SearchViewModel(
 
         viewModelScope.launch {
             try {
-                val results = galleryTools.searchPhotos(query)
+                // Use semantic search instead of filename search
+                val results = galleryTools.searchPhotosBySemantic(
+                    query = query,
+                    limit = 100,  // Get more results for search screen
+                    threshold = _uiState.value.threshold  // Use threshold from state
+                )
                 _uiState.update { current ->
                     current.copy(
                         photos = results,
                         isLoading = false
                     )
                 }
-                Log.d(TAG, "Search found ${results.size} photos")
+                Log.d(TAG, "Semantic search found ${results.size} photos with threshold ${_uiState.value.threshold}")
             } catch (e: Exception) {
                 Log.e(TAG, "Search failed", e)
                 _uiState.update { it.copy(isLoading = false, photos = emptyList()) }
@@ -172,7 +182,9 @@ fun SearchScreen(
             } else {
                 SearchTopBar(
                     searchQuery = uiState.searchQuery,
+                    threshold = uiState.threshold,
                     onQueryChange = { viewModel.updateSearchQuery(it) },
+                    onThresholdChange = { viewModel.updateThreshold(it) },
                     onSearch = { viewModel.performSearch() },
                     onClear = { viewModel.clearSearch() }
                 )
@@ -260,37 +272,94 @@ fun SearchScreen(
 @Composable
 fun SearchTopBar(
     searchQuery: String,
+    threshold: Float,
     onQueryChange: (String) -> Unit,
+    onThresholdChange: (Float) -> Unit,
     onSearch: () -> Unit,
     onClear: () -> Unit
 ) {
-    TopAppBar(
-        title = {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onQueryChange,
-                placeholder = { Text("Search photos by name...") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = onClear) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear")
+    Column {
+        TopAppBar(
+            title = {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onQueryChange,
+                    placeholder = { Text("Search photos (e.g., 'sunset', 'cat', 'people')...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = onClear) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear")
+                            }
                         }
-                    }
-                },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                    )
                 )
-            )
-        },
-        actions = {
-            IconButton(onClick = onSearch) {
-                Icon(Icons.Default.Search, contentDescription = "Search")
+            },
+            actions = {
+                IconButton(onClick = onSearch) {
+                    Icon(Icons.Default.Search, contentDescription = "Search")
+                }
+            }
+        )
+        
+        // Threshold slider
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Similarity Threshold",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "${(threshold * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                
+                Slider(
+                    value = threshold,
+                    onValueChange = onThresholdChange,
+                    valueRange = 0f..1f,
+                    steps = 19,  // Creates 20 discrete values (0.05 increments)
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "More results",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "More precise",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
