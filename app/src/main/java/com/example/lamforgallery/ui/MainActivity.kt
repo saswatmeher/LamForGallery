@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.ImageSearch // --- ADDED ---
 import androidx.compose.material.icons.filled.PhotoAlbum
+import androidx.compose.material.icons.filled.Search // --- ADDED ---
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable // <-- NEW IMPORT
@@ -56,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private val agentViewModel: AgentViewModel by viewModels { factory }
     private val photosViewModel: PhotosViewModel by viewModels { factory }
     private val albumsViewModel: AlbumsViewModel by viewModels { factory }
+    private val searchViewModel: SearchViewModel by viewModels { factory }
     // --- End ViewModels ---
     val embeddingViewModel: EmbeddingViewModel by viewModels { factory }
     // --- READ PERMISSION ---
@@ -126,6 +128,7 @@ class MainActivity : ComponentActivity() {
                             agentViewModel = agentViewModel,
                             photosViewModel = photosViewModel,
                             albumsViewModel = albumsViewModel,
+                            searchViewModel = searchViewModel,
                             embeddingViewModel = embeddingViewModel,
                             // --- END PASS ---
                             onLaunchPermissionRequest = { intentSender, type ->
@@ -202,6 +205,7 @@ fun AppNavigationHost(
     agentViewModel: AgentViewModel,
     photosViewModel: PhotosViewModel,
     albumsViewModel: AlbumsViewModel,
+    searchViewModel: SearchViewModel,
     embeddingViewModel: EmbeddingViewModel,
     // --- END RECEIVE ---
     onLaunchPermissionRequest: (IntentSender, PermissionType) -> Unit
@@ -223,6 +227,7 @@ fun AppNavigationHost(
                 agentViewModel = agentViewModel,
                 photosViewModel = photosViewModel,
                 albumsViewModel = albumsViewModel,
+                searchViewModel = searchViewModel,
                 embeddingViewModel = embeddingViewModel,
                 // Pass tab state down
                 selectedTab = selectedTab,
@@ -270,6 +275,7 @@ fun AppShell(
     agentViewModel: AgentViewModel,
     photosViewModel: PhotosViewModel,
     albumsViewModel: AlbumsViewModel,
+    searchViewModel: SearchViewModel,
     embeddingViewModel: EmbeddingViewModel,
     selectedTab: String,
     onTabSelected: (String) -> Unit,
@@ -293,6 +299,12 @@ fun AppShell(
                     onClick = { onTabSelected("albums") }, // Use the lambda
                     icon = { Icon(Icons.Default.PhotoAlbum, contentDescription = "Albums") },
                     label = { Text("Albums") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == "search",
+                    onClick = { onTabSelected("search") },
+                    icon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                    label = { Text("Search") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == "agent",
@@ -319,6 +331,13 @@ fun AppShell(
                 "albums" -> AlbumsScreen(
                     viewModel = albumsViewModel,
                     onAlbumClick = onAlbumClick // Pass the navigation click
+                )
+                "search" -> SearchScreen(
+                    viewModel = searchViewModel,
+                    onPhotosDeleted = {
+                        albumsViewModel.loadAlbums()
+                        photosViewModel.refreshPhotos()
+                    }
                 )
                 "agent" -> AgentScreen(
                     viewModel = agentViewModel,

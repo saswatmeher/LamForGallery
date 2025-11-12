@@ -106,29 +106,20 @@ class GalleryTools(
     // --- AGENT TOOL IMPLEMENTATIONS ---
 
     /**
-     * Searches MediaStore by filename.
+     * Searches for photos by filename in the database (excludes trashed photos).
      */
     suspend fun searchPhotos(query: String): List<String> {
-        Log.d(TAG, "AGENT REQUESTED SEARCH for: $query")
-        val photoUris = mutableListOf<String>()
-        val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(MediaStore.Images.Media._ID)
-        val selection = "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ?"
-        val selectionArgs = arrayOf("%$query%")
-        val sortOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC"
-
+        Log.d(TAG, "Searching database for: $query")
         return withContext(Dispatchers.IO) {
-            resolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
-                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idColumn)
-                    // Use ContentUris.withAppendedId to build the correct URI
-                    val contentUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-                    photoUris.add(contentUri.toString())
-                }
+            try {
+                val images = imageDao.searchImages("%$query%")
+                val uris = images.map { it.uri }
+                Log.d(TAG, "Found ${uris.size} photos matching query (excluding trashed).")
+                uris
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to search photos", e)
+                emptyList()
             }
-            Log.d(TAG, "Found ${photoUris.size} photos matching query.")
-            photoUris
         }
     }
 

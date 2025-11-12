@@ -87,6 +87,11 @@ class ViewModelFactory(
                 AlbumsViewModel(galleryTools) as T
             }
 
+            // When SearchViewModel is requested...
+            modelClass.isAssignableFrom(SearchViewModel::class.java) -> {
+                SearchViewModel(galleryTools) as T
+            }
+
             // --- ADD THIS NEW CASE ---
             modelClass.isAssignableFrom(AlbumDetailViewModel::class.java) -> {
                 AlbumDetailViewModel(galleryTools) as T

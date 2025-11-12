@@ -46,6 +46,9 @@ interface ImageDao {
     
     @Query("DELETE FROM images")
     suspend fun clearAllImages()
+    
+    @Query("SELECT * FROM images WHERE displayName LIKE :query AND isTrashed = 0 ORDER BY dateTaken DESC")
+    suspend fun searchImages(query: String): List<ImageEntity>
 }
 
 data class AlbumInfo(
