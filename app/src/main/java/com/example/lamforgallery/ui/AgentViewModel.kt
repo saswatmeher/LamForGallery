@@ -7,8 +7,9 @@ import androidx.lifecycle.viewModelScope
 import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.reflect.asTools
-import ai.koog.prompt.executor.clients.google.GoogleModels
-import ai.koog.prompt.executor.llms.all.simpleGoogleAIExecutor
+import ai.koog.prompt.executor.llms.all.simpleOllamaAIExecutor
+import ai.koog.prompt.llm.LLModel 
+import ai.koog.prompt.llm.LLMProvider
 import com.example.lamforgallery.tools.GalleryTools
 import com.example.lamforgallery.tools.GalleryToolSet
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,10 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.util.UUID
-import java.io.File
 
 // --- STATE DEFINITIONS ---
 
@@ -50,7 +48,6 @@ sealed class AgentStatus {
 data class AgentUiState(
     val messages: List<ChatMessage> = emptyList(),
     val currentStatus: AgentStatus = AgentStatus.Idle,
-    val apiKey: String = "",
     val searchResults: List<String> = emptyList() // Photo URIs from search
 )
 
@@ -71,76 +68,27 @@ class AgentViewModel(
             updateSearchResults(photoUris)
         }
     }
-    
-    // API key will be read from file
-    private var currentApiKey: String = ""
 
-    private val _uiState = MutableStateFlow(AgentUiState(apiKey = currentApiKey))
+    private val _uiState = MutableStateFlow(AgentUiState())
     val uiState: StateFlow<AgentUiState> = _uiState.asStateFlow()
 
     init {
-        // Read API key from file and initialize agent
+        // Initialize with Ollama - no API key needed
         viewModelScope.launch {
             try {
-                val apiKey = readApiKeyFromFile()
-                if (apiKey.isNotEmpty()) {
-                    currentApiKey = apiKey
-                    _uiState.update { it.copy(apiKey = apiKey) }
-                    initializeAgent(apiKey)
-                } else {
-                    addMessage(ChatMessage(
-                        text = """⚠️ API key not found. Please create a file at:
-                            |${getApiKeyFilePath()}
-                            |
-                            |Add your Gemini API key as a single line in this file.""".trimMargin(),
-                        sender = Sender.ERROR
-                    ))
-                }
+                initializeAgent()
+                addMessage(ChatMessage(
+                    text = "Connected to local Ollama model. How can I help you manage your photos?",
+                    sender = Sender.AGENT
+                ))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize agent on startup", e)
                 addMessage(ChatMessage(
-                    text = "Failed to initialize agent: ${e.message}\n\nPlease check API key file at: ${getApiKeyFilePath()}",
+                    text = "Failed to initialize agent: ${e.message}\n\nPlease ensure Ollama is running on localhost:11434",
                     sender = Sender.ERROR
                 ))
             }
         }
-    }
-
-    /**
-     * Returns the path where the API key file should be located.
-     * File: /data/data/com.example.lamforgallery/files/gemini_api_key.txt
-     */
-    private fun getApiKeyFilePath(): String {
-        return File(application.filesDir, "gemini_api_key.txt").absolutePath
-    }
-
-    /**
-     * Reads the API key from the internal file.
-     * Returns empty string if file doesn't exist or can't be read.
-     */
-    private suspend fun readApiKeyFromFile(): String {
-        return withContext(Dispatchers.IO) {
-            try {
-                val file = File(application.filesDir, "gemini_api_key.txt")
-                if (file.exists()) {
-                    val content = file.readText().trim()
-                    Log.d(TAG, "API key loaded from: ${file.absolutePath}")
-                    content
-                } else {
-                    Log.w(TAG, "API key file not found at: ${file.absolutePath}")
-                    ""
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error reading API key file", e)
-                ""
-            }
-        }
-    }
-
-    // --- API KEY MANAGEMENT ---
-    
-    fun setApiKey(apiKey: String) {
-        _uiState.update { it.copy(apiKey = apiKey) }
     }
 
     // --- USER INPUT ---
@@ -160,12 +108,6 @@ class AgentViewModel(
             return
         }
 
-        val apiKey = currentState.apiKey
-        if (apiKey.isEmpty()) {
-            addMessage(ChatMessage(text = "Please enter your Gemini API key first.", sender = Sender.ERROR))
-            return
-        }
-
         viewModelScope.launch {
             addMessage(ChatMessage(text = input, sender = Sender.USER))
             setStatus(AgentStatus.Loading("Thinking..."))
@@ -180,7 +122,15 @@ class AgentViewModel(
                 
                 // Create a fresh agent instance for each message to avoid "already started" errors
                 val freshAgent = AIAgent(
-                    promptExecutor = simpleGoogleAIExecutor(apiKey),
+                    promptExecutor = simpleOllamaAIExecutor(
+                        baseUrl = "http://192.168.1.10:11434"
+                    ),
+                    llmModel = LLModel(
+                        provider = LLMProvider.Ollama,
+                        id = "qwen3:4b",
+                        capabilities = emptyList(),
+                        contextLength = 262144
+                    ),
                     systemPrompt = """You are a helpful AI assistant for managing photo galleries.
                         |You have access to tools for searching, organizing, and editing photos.
                         |
@@ -188,7 +138,6 @@ class AgentViewModel(
                         |When you receive photo URIs from the tool, display them clearly to the user.
                         |
                         |Be friendly, concise, and helpful in your responses.""".trimMargin(),
-                    llmModel = GoogleModels.Gemini2_0Flash,
                     temperature = 0.7,
                     maxIterations = 10,
                     toolRegistry = toolRegistry
@@ -225,21 +174,26 @@ class AgentViewModel(
         _uiState.update { it.copy(searchResults = emptyList()) }
     }
 
-    private suspend fun initializeAgent(apiKey: String) {
-        currentApiKey = apiKey
-        
-        Log.d(TAG, "Initializing new AI Agent...")
+    private suspend fun initializeAgent() {
+        Log.d(TAG, "Initializing new AI Agent with Ollama...")
         
         agent = AIAgent(
-            promptExecutor = simpleGoogleAIExecutor(apiKey),
+            promptExecutor = simpleOllamaAIExecutor(
+                baseUrl = "http://10.0.2.2:11434"
+            ),
+            llmModel = LLModel(
+                provider = LLMProvider.Ollama,
+                id = "qwen2.5:3b",
+                capabilities = emptyList(),
+                contextLength = 262144
+            ),
             systemPrompt = """You are a helpful AI assistant. 
                 |Be friendly, concise, and helpful in your responses.""".trimMargin(),
-            llmModel = GoogleModels.Gemini2_0Flash,
             temperature = 0.7,
             maxIterations = 10
         )
         
-        Log.d(TAG, "Agent initialized successfully")
+        Log.d(TAG, "Agent initialized successfully with Ollama")
     }
 
     private fun addMessage(message: ChatMessage) {
@@ -254,11 +208,9 @@ class AgentViewModel(
 
     fun clearHistory() {
         agent = null
-        currentApiKey = ""
         _uiState.update { 
             AgentUiState(
-                messages = listOf(ChatMessage(text = "Conversation cleared. Send a new message to start.", sender = Sender.AGENT)),
-                apiKey = _uiState.value.apiKey
+                messages = listOf(ChatMessage(text = "Conversation cleared. Send a new message to start.", sender = Sender.AGENT))
             )
         }
     }

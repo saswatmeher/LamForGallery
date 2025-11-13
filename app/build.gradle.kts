@@ -85,6 +85,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
     implementation("com.google.code.gson:gson:2.10.1")
     
+    // OkHttp for Ollama API communication
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.3")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")

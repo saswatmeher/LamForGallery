@@ -1,12 +1,17 @@
-# Quick Start Guide - LamForGallery with Koog
+# Quick Start Guide - LamForGallery with Ollama
 
 ## 🚀 Quick Setup (5 minutes)
 
-### 1. Get Gemini API Key
-```
-Visit: https://makersuite.google.com/app/apikey
-Click: Create API Key
-Copy: Your new API key
+### 1. Start Ollama Server
+```bash
+# Install Ollama (if not already installed)
+# Visit: https://ollama.ai/download
+
+# Pull the model
+ollama pull llama3.2
+
+# Start Ollama server (runs on localhost:11434)
+ollama serve
 ```
 
 ### 2. Build & Install
@@ -19,8 +24,7 @@ cd /home/saswat/projects/Agent/LamForGallery
 1. Open LamForGallery app
 2. Grant storage permissions when prompted
 3. Navigate to "Agent" tab
-4. A dialog will appear - paste your Gemini API key
-5. Click "OK"
+4. The app will automatically connect to Ollama on localhost
 
 ### 4. Try It Out!
 
@@ -170,8 +174,9 @@ implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 
 ## 🐛 Troubleshooting
 
-### "API key not set" error
-→ Click the status text and enter your API key
+### "Error connecting to Ollama" error
+→ Ensure Ollama is running: `ollama serve`
+→ Check that the model is pulled: `ollama pull llama3.2`
 
 ### "No photos found"
 → Ensure device has photos and storage permission granted
@@ -189,7 +194,7 @@ implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 ## 📚 Resources
 
 - **Koog Documentation:** https://github.com/JetBrains/koog
-- **Gemini API:** https://ai.google.dev/
+- **Ollama:** https://ollama.ai/
 - **Full Migration Guide:** `MIGRATION_TO_KOOG.md`
 - **Summary:** `MIGRATION_SUMMARY.md`
 
@@ -198,7 +203,7 @@ implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 Test these to verify everything works:
 
 ```
-✓ API key can be configured
+✓ Ollama server is running
 ✓ Search by filename works
 ✓ Semantic search works (if embeddings exist)
 ✓ Photo selection works
@@ -210,7 +215,7 @@ Test these to verify everything works:
 
 ---
 
-**Last Updated:** November 12, 2025  
-**Version:** 1.0  
+**Last Updated:** November 13, 2025  
+**Version:** 2.0  
 **Framework:** Koog 0.5.2  
-**LLM:** Gemini 2.0 Flash
+**LLM:** Ollama (llama3.2:latest)

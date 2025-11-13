@@ -2,7 +2,7 @@
 
 ## ✅ Migration Complete
 
-The LamForGallery Android app has been successfully migrated from using a remote REST API-based agentic framework to the **on-device Koog agentic framework** with **Google Gemini AI**.
+The LamForGallery Android app has been successfully migrated from using Google Gemini API to **Ollama running on localhost**. This enables fully local AI inference without requiring API keys or external API calls.
 
 ## What Was Changed
 
@@ -51,18 +51,20 @@ All tools use `@Tool` and `@LLMDescription` annotations for automatic discovery.
 
 **After:**
 - Direct Koog `AIAgent` integration
-- Uses `simpleGoogleAIExecutor` with Gemini 2.0 Flash
+- Uses custom `OllamaExecutor` for local inference
 - Tool registry with gallery and semantic search tools
 - Simplified state management
-- Local API key management
+- No API key needed
 
 Key changes:
 ```kotlin
-// Initialize Koog agent
+// Initialize Koog agent with Ollama
 agent = AIAgent(
-    promptExecutor = simpleGoogleAIExecutor(apiKey),
+    promptExecutor = simpleOllamaExecutor(
+        baseUrl = "http://10.0.2.2:11434", // Android emulator localhost
+        model = "llama3.2:latest"
+    ),
     systemPrompt = "...",
-    llmModel = GoogleModels.Gemini2_0Flash,
     temperature = 0.7,
     maxIterations = 30,
     toolRegistry = toolRegistry
@@ -73,10 +75,8 @@ agent = AIAgent(
 
 **File:** `ui/AgentScreen.kt`
 
-- ✅ Added API key configuration dialog
-- ✅ API key status indicator ("⚠️ API Key not set" / "✓ API Key configured")
-- ✅ Click to reconfigure API key
-- ✅ Input disabled when API key is missing
+- ✅ Simplified UI without API key configuration
+- ✅ Automatic connection to local Ollama server
 - ✅ Visual feedback for agent status
 
 ### 5. **Infrastructure Cleanup**
@@ -85,10 +85,16 @@ agent = AIAgent(
 - ❌ `network/NetworkModule.kt` - Retrofit configuration
 - ❌ `network/AgentApiService.kt` - REST API interface
 - ❌ `data/AndroidModels.kt` - Request/Response models
+- ❌ Google Gemini API integration
+- ❌ API key management code
+
+**Added:**
+- ✅ `ollama/OllamaExecutor.kt` - Custom Ollama integration
 
 **Updated:**
 - ✅ `ui/ViewModelFactory.kt` - Removed REST API dependencies
 - ✅ `ui/MainActivity.kt` - Updated permission callback method name
+- ✅ `app/build.gradle.kts` - Added OkHttp for Ollama API calls
 
 ### 6. **Bug Fixes**
 
@@ -107,8 +113,17 @@ BUILD SUCCESSFUL in 5s
 
 ## How to Use
 
-### 1. Get Gemini API Key
-Visit [Google AI Studio](https://makersuite.google.com/app/apikey) and create an API key.
+### 1. Start Ollama Server
+```bash
+# Install Ollama
+# Visit: https://ollama.ai/download
+
+# Pull the model
+ollama pull llama3.2
+
+# Start server
+ollama serve
+```
 
 ### 2. Run the App
 ```bash
@@ -116,13 +131,7 @@ cd /home/saswat/projects/Agent/LamForGallery
 ./gradlew installDebug
 ```
 
-### 3. Configure API Key
-- Open the app
-- Navigate to Agent tab
-- Enter your Gemini API key in the dialog
-- Click OK
-
-### 4. Start Using
+### 3. Start Using
 Try these commands:
 - "Search for photos with 'beach' in the name"
 - "Find photos of sunsets using AI"
@@ -133,49 +142,39 @@ Try these commands:
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────┐
-│    LamForGallery Android App        │
-│                                      │
-│  ┌────────────────────────────────┐ │
-│  │   AgentViewModel               │ │
-│  │   - Manages Koog AIAgent       │ │
-│  │   - Handles user input         │ │
-│  │   - Processes tool responses   │ │
-│  └───────────┬────────────────────┘ │
-│              │                        │
-│              ▼                        │
-│  ┌────────────────────────────────┐ │
-│  │   Koog AIAgent                 │ │
-│  │   - Gemini 2.0 Flash LLM       │ │
-│  │   - Tool registry              │ │
-│  │   - Context management         │ │
-│  └───────────┬────────────────────┘ │
-│              │                        │
-│              ▼                        │
-│  ┌────────────────────────────────┐ │
-│  │   Tool Sets                    │ │
-│  │   - GalleryToolSet (8 tools)  │ │
-│  │   - SemanticSearchToolSet      │ │
-│  └────────────────────────────────┘ │
+┌──────────────────────────────────────┐
+│      Android App (Compose UI)        │
+│  ┌────────────────────────────────┐  │
+│  │   AgentViewModel               │  │
+│  │   - Koog AIAgent               │  │
+│  │   - OllamaExecutor             │  │
+│  │   - llama3.2:latest            │  │
+│  └────────────────────────────────┘  │
+│  ┌────────────────────────────────┐  │
+│  │   Tool Sets                    │  │
+│  │   - GalleryToolSet (8 tools)   │  │
+│  │   - SemanticSearchToolSet      │  │
+│  └────────────────────────────────┘  │
 └──────────────┬───────────────────────┘
                │
-               │ HTTPS
+               │ HTTP (localhost)
                ▼
       ┌────────────────┐
-      │   Gemini API   │
-      │  (Google AI)   │
+      │ Ollama Server  │
+      │  localhost:    │
+      │    11434       │
       └────────────────┘
 ```
 
 ## Benefits
 
 1. ✅ **No Backend Required** - No server infrastructure needed
-2. ✅ **Better Privacy** - API key stays on device
-3. ✅ **Faster Responses** - Direct Gemini API communication
-4. ✅ **Lower Cost** - No server hosting, only API usage
+2. ✅ **Complete Privacy** - All AI inference happens locally
+3. ✅ **No API Costs** - Free to run with your own hardware
+4. ✅ **No Internet Required** - Works offline after model download
 5. ✅ **Simpler Architecture** - Fewer moving parts
 6. ✅ **Easy to Extend** - Add tools with `@Tool` annotations
-7. ✅ **More Reliable** - No network intermediary
+7. ✅ **More Reliable** - No external dependencies
 
 ## System Prompt
 
@@ -274,8 +273,7 @@ To test the migration:
 
 ---
 
-**Migration Completed:** November 12, 2025  
-**Build Status:** ✅ SUCCESS  
-**Koog Version:** 0.5.2  
-**Kotlin Version:** 2.1.0  
-**LLM:** Google Gemini 2.0 Flash
+**Last Updated:** November 13, 2025  
+**Status:** ✅ Complete  
+**Framework:** Koog 0.5.2  
+**LLM:** Ollama (llama3.2:latest)
