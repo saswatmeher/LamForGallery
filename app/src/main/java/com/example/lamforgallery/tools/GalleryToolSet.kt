@@ -39,7 +39,7 @@ class GalleryToolSet(
     )
 
     @Tool
-    @LLMDescription("Searches for photos using AI-powered semantic search. Can understand natural language queries like 'sunset', 'people smiling', 'cat photos'. Falls back to filename search if AI embeddings are not available.")
+    @LLMDescription("Searches for photos using AI-powered semantic search. Returns a list of photo URIs that can be passed to other tools. Can understand natural language queries like 'sunset', 'people smiling', 'cat photos'. Falls back to filename search if AI embeddings are not available.")
     suspend fun searchPhotos(args: SearchPhotosArgs): String {
         return try {
             val uris = galleryTools.searchPhotosBySemantic(args.query, args.limit, args.threshold)
@@ -48,7 +48,9 @@ class GalleryToolSet(
             // Update UI with search results via callback
             onSearchResults?.invoke(uris)
             
-            """{"count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
+            // Return URIs as a JSON array that can be easily extracted and passed to other tools
+            val urisJson = uris.joinToString(",") { "\"$it\"" }
+            """{"photoUris": [$urisJson], "count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
         } catch (e: Exception) {
             Log.e(TAG, "Error searching photos", e)
             """{"error": "Failed to search photos: ${e.message}"}"""
@@ -62,19 +64,24 @@ class GalleryToolSet(
     )
 
     @Tool
-    @LLMDescription("Deletes the specified photos from the gallery. Requires user permission on Android 11+. Returns success status.")
+    @LLMDescription("Moves the specified photos to trash. They can be restored later from the Trash album. No system permissions required.")
     suspend fun deletePhotos(args: DeletePhotosArgs): String {
-        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            """{"error": "Delete operation requires Android 11+"}"""
-        } else {
-            try {
-                // This will trigger permission request flow
-                Log.d(TAG, "Delete requested for ${args.photoUris.size} photos")
-                """{"requiresPermission": true, "permissionType": "DELETE", "photoUris": ${args.photoUris.map { "\"$it\"" }}}"""
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in delete photos", e)
-                """{"error": "Failed to delete photos: ${e.message}"}"""
+        return try {
+            if (args.photoUris.isEmpty()) {
+                return """{"error": "No photos provided to delete"}"""
             }
+            
+            Log.d(TAG, "Moving ${args.photoUris.size} photos to trash")
+            val success = galleryTools.moveToTrash(args.photoUris)
+            
+            if (success) {
+                """{"success": true, "count": ${args.photoUris.size}, "message": "Moved ${args.photoUris.size} photos to trash"}"""
+            } else {
+                """{"error": "Failed to move photos to trash"}"""
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in delete photos", e)
+            """{"error": "Failed to delete photos: ${e.message}"}"""
         }
     }
 

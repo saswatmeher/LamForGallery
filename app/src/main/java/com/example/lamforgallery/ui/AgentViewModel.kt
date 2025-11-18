@@ -8,7 +8,7 @@ import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.reflect.asTools
 import ai.koog.prompt.executor.llms.all.simpleOllamaAIExecutor
-import ai.koog.prompt.llm.LLModel 
+import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.llm.LLMProvider
 import com.example.lamforgallery.tools.GalleryTools
 import com.example.lamforgallery.tools.GalleryToolSet
@@ -78,13 +78,13 @@ class AgentViewModel(
             try {
                 initializeAgent()
                 addMessage(ChatMessage(
-                    text = "Connected to local Ollama model. How can I help you manage your photos?",
+                    text = "Connected to local Ollama model. How can I help you manage your photos?\n\nI can handle complex operations like:\n• \"Delete all pictures of boys\" (searches then deletes)\n• \"Find sunset photos and apply sepia filter\"\n• \"Search for beaches and move them to Vacation album\"",
                     sender = Sender.AGENT
                 ))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize agent on startup", e)
                 addMessage(ChatMessage(
-                    text = "Failed to initialize agent: ${e.message}\n\nPlease ensure Ollama is running on localhost:11434",
+                    text = "Failed to initialize agent: ${e.message}\n\nPlease ensure Ollama is running at http://192.168.1.8:11436",
                     sender = Sender.ERROR
                 ))
             }
@@ -113,18 +113,17 @@ class AgentViewModel(
             setStatus(AgentStatus.Loading("Thinking..."))
 
             try {
-                Log.d(TAG, "Creating fresh agent instance for new message")
+                Log.d(TAG, "Processing query: $input")
+                setStatus(AgentStatus.Loading("Processing..."))
                 
-                // Create tool registry with gallery tools
+                // Create tool registry
                 val toolRegistry = ToolRegistry {
                     tools(galleryToolSet.asTools())
                 }
                 
-                // Create a fresh agent instance for each message to avoid "already started" errors
+                // Create agent with enhanced maxIterations for multi-step operations
                 val freshAgent = AIAgent(
-                    promptExecutor = simpleOllamaAIExecutor(
-                        baseUrl = "http://192.168.1.8:11436"
-                    ),
+                    promptExecutor = simpleOllamaAIExecutor(baseUrl = "http://192.168.1.8:11436"),
                     llmModel = LLModel(
                         provider = LLMProvider.Ollama,
                         id = "qwen3:4b",
@@ -134,18 +133,35 @@ class AgentViewModel(
                     systemPrompt = """You are a helpful AI assistant for managing photo galleries.
                         |You have access to tools for searching, organizing, and editing photos.
                         |
-                        |When the user asks to search, find, show, or look for photos, use the searchPhotos tool.
-                        |When you receive photo URIs from the tool, display them clearly to the user.
+                        |IMPORTANT: You can chain multiple tool calls together for complex operations:
                         |
-                        |Be friendly, concise, and helpful in your responses.""".trimMargin(),
+                        |For "delete all pictures of X":
+                        |1. First call searchPhotos(query="X") to find matching photos
+                        |2. The response contains a "photoUris" array: {"photoUris": ["uri1", "uri2", ...], "count": N}
+                        |3. Extract the photoUris array from the JSON response
+                        |4. Then call deletePhotos(photoUris=["uri1", "uri2", "uri3"]) with the extracted URIs
+                        |
+                        |For "move all X photos to Y album":
+                        |1. First call searchPhotos(query="X")
+                        |2. Extract the "photoUris" array from the JSON response
+                        |3. Then call movePhotosToAlbum(photoUris=[...], albumName="Y")
+                        |
+                        |For "apply filter to X photos":
+                        |1. First call searchPhotos(query="X")
+                        |2. Extract the "photoUris" array from the response
+                        |3. Then call applyFilter(photoUris=[...], filterName="filter")
+                        |
+                        |The searchPhotos tool returns JSON with this structure:
+                        |{"photoUris": ["content://media/...", "content://media/..."], "count": 5, "message": "..."}
+                        |
+                        |Always extract the "photoUris" array and pass it directly to the next tool.
+                        |Be friendly, concise, and provide updates about each step.""".trimMargin(),
                     temperature = 0.7,
-                    maxIterations = 10,
+                    maxIterations = 20,  // Increased for multi-step operations
                     toolRegistry = toolRegistry
                 )
-
-                Log.d(TAG, "Sending to agent: $input")
                 
-                // Run the agent
+                Log.d(TAG, "Sending to agent: $input")
                 val response = freshAgent.run(input)
                 
                 if (response != null && response.isNotEmpty()) {
@@ -175,25 +191,26 @@ class AgentViewModel(
     }
 
     private suspend fun initializeAgent() {
-        Log.d(TAG, "Initializing new AI Agent with Ollama...")
+        Log.d(TAG, "Initializing agent with Ollama...")
         
-        agent = AIAgent(
-            promptExecutor = simpleOllamaAIExecutor(
-                baseUrl = "http://192.168.1.8:11436"
-            ),
-            llmModel = LLModel(
-                provider = LLMProvider.Ollama,
-                id = "qwen2.5:3b",
-                capabilities = emptyList(),
-                contextLength = 262144
-            ),
-            systemPrompt = """You are a helpful AI assistant. 
-                |Be friendly, concise, and helpful in your responses.""".trimMargin(),
-            temperature = 0.7,
-            maxIterations = 10
+        val executor = simpleOllamaAIExecutor(baseUrl = "http://192.168.1.8:11436")
+        val model = LLModel(
+            provider = LLMProvider.Ollama,
+            id = "qwen2.5:3b",
+            capabilities = emptyList(),
+            contextLength = 262144
         )
         
-        Log.d(TAG, "Agent initialized successfully with Ollama")
+        agent = AIAgent(
+            promptExecutor = executor,
+            llmModel = model,
+            systemPrompt = """You are a helpful AI assistant for managing photo galleries.
+                |Be friendly, concise, and helpful in your responses.""".trimMargin(),
+            temperature = 0.7,
+            maxIterations = 20
+        )
+        
+        Log.d(TAG, "Agent initialized successfully")
     }
 
     private fun addMessage(message: ChatMessage) {
