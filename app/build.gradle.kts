@@ -74,7 +74,7 @@ dependencies {
     testImplementation(libs.junit)
     
     // Koog AI Agent Framework
-    implementation("ai.koog:koog-agents:0.5.2")
+    implementation("ai.koog:koog-agents:0.5.3")
     
     // Ktor Client (required by Koog)
     implementation("io.ktor:ktor-client-cio:2.3.5")

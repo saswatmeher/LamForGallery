@@ -27,7 +27,8 @@ import java.util.UUID
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val text: String,
-    val sender: Sender
+    val sender: Sender,
+    val isStreaming: Boolean = false // True when message is being streamed
 )
 
 enum class Sender {
@@ -61,12 +62,22 @@ class AgentViewModel(
     // Koog AI Agent
     private var agent: AIAgent<String, String>? = null
     
+    // Track streaming message ID
+    private var streamingMessageId: String? = null
+    
     // Gallery toolset for photo operations
     private val galleryToolSet: GalleryToolSet by lazy {
-        GalleryToolSet(galleryTools) { photoUris ->
-            // Callback to update search results from tool
-            updateSearchResults(photoUris)
-        }
+        GalleryToolSet(
+            galleryTools = galleryTools,
+            onSearchResults = { photoUris ->
+                // Callback to update search results from tool
+                updateSearchResults(photoUris)
+            },
+            onFunctionCall = { functionName, argsJson ->
+                // Callback to display function calls in chat
+                displayFunctionCall(functionName, argsJson)
+            }
+        )
     }
 
     private val _uiState = MutableStateFlow(AgentUiState())
@@ -116,12 +127,22 @@ class AgentViewModel(
                 Log.d(TAG, "Processing query: $input")
                 setStatus(AgentStatus.Loading("Processing..."))
                 
+                // Create initial message that will be updated with LLM output
+                val messageId = UUID.randomUUID().toString()
+                streamingMessageId = messageId
+                addMessage(ChatMessage(
+                    id = messageId,
+                    text = "🤔 Thinking...",
+                    sender = Sender.AGENT,
+                    isStreaming = true
+                ))
+                
                 // Create tool registry
                 val toolRegistry = ToolRegistry {
                     tools(galleryToolSet.asTools())
                 }
                 
-                // Create agent with enhanced maxIterations for multi-step operations
+                // Create agent
                 val freshAgent = AIAgent(
                     promptExecutor = simpleOllamaAIExecutor(baseUrl = "http://192.168.1.8:11436"),
                     llmModel = LLModel(
@@ -161,15 +182,25 @@ class AgentViewModel(
                     toolRegistry = toolRegistry
                 )
                 
-                Log.d(TAG, "Sending to agent: $input")
+                Log.d(TAG, "\n" + "=".repeat(60))
+                Log.d(TAG, "🚀 AGENT EXECUTION START")
+                Log.d(TAG, "📝 User Input: $input")
+                Log.d(TAG, "=".repeat(60))
+                
                 val response = freshAgent.run(input)
                 
+                Log.d(TAG, "\n" + "=".repeat(60))
+                Log.d(TAG, "✅ AGENT EXECUTION COMPLETE")
+                Log.d(TAG, "💬 Final Response: $response")
+                Log.d(TAG, "=".repeat(60) + "\n")
+                
+                // Update message with final response
+                streamingMessageId = null
                 if (response != null && response.isNotEmpty()) {
-                    Log.d(TAG, "Agent response: $response")
-                    addMessage(ChatMessage(text = response, sender = Sender.AGENT))
+                    updateMessage(messageId, response, Sender.AGENT)
                 } else {
                     Log.w(TAG, "Agent returned null or empty response")
-                    addMessage(ChatMessage(text = "No response from agent.", sender = Sender.ERROR))
+                    updateMessage(messageId, "No response from agent.", Sender.ERROR)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in agent execution", e)
@@ -216,6 +247,52 @@ class AgentViewModel(
     private fun addMessage(message: ChatMessage) {
         _uiState.update { currentState ->
             currentState.copy(messages = currentState.messages + message)
+        }
+    }
+    
+    private fun displayFunctionCall(functionName: String, argsJson: String) {
+        addMessage(ChatMessage(
+            text = "🔧 Function Call: $functionName\nArguments: $argsJson",
+            sender = Sender.AGENT
+        ))
+    }
+    
+    private fun appendToStreamingMessage(messageId: String, text: String) {
+        _uiState.update { currentState ->
+            val updatedMessages = currentState.messages.map { msg ->
+                if (msg.id == messageId && msg.isStreaming) {
+                    msg.copy(text = msg.text + text)
+                } else {
+                    msg
+                }
+            }
+            currentState.copy(messages = updatedMessages)
+        }
+    }
+    
+    private fun finalizeStreamingMessage(messageId: String) {
+        _uiState.update { currentState ->
+            val updatedMessages = currentState.messages.map { msg ->
+                if (msg.id == messageId) {
+                    msg.copy(isStreaming = false)
+                } else {
+                    msg
+                }
+            }
+            currentState.copy(messages = updatedMessages)
+        }
+    }
+    
+    private fun updateMessage(messageId: String, text: String, sender: Sender) {
+        _uiState.update { currentState ->
+            val updatedMessages = currentState.messages.map { msg ->
+                if (msg.id == messageId) {
+                    msg.copy(text = text, sender = sender, isStreaming = false)
+                } else {
+                    msg
+                }
+            }
+            currentState.copy(messages = updatedMessages)
         }
     }
 

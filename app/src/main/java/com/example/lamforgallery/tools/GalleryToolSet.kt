@@ -9,6 +9,8 @@ import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
 
 /**
  * Koog-compatible ToolSet for gallery operations.
@@ -17,7 +19,8 @@ import kotlinx.serialization.Serializable
 @LLMDescription("Tools for searching, organizing, and editing photos in the device gallery")
 class GalleryToolSet(
     private val galleryTools: GalleryTools,
-    private val onSearchResults: ((List<String>) -> Unit)? = null
+    private val onSearchResults: ((List<String>) -> Unit)? = null,
+    private val onFunctionCall: ((functionName: String, argsJson: String) -> Unit)? = null
 ) : ToolSet {
 
     private val TAG = "GalleryToolSet"
@@ -42,17 +45,34 @@ class GalleryToolSet(
     @LLMDescription("Searches for photos using AI-powered semantic search. Returns a list of photo URIs that can be passed to other tools. Can understand natural language queries like 'sunset', 'people smiling', 'cat photos'. Falls back to filename search if AI embeddings are not available.")
     suspend fun searchPhotos(args: SearchPhotosArgs): String {
         return try {
+            // Log and display the LLM's function call
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: searchPhotos")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("searchPhotos", argsJson)
+            
+            Log.d(TAG, "🔍 Executing: searchPhotos")
+            Log.d(TAG, "  - Query: '${args.query}'")
+            Log.d(TAG, "  - Limit: ${args.limit}")
+            
             val uris = galleryTools.searchPhotosBySemantic(args.query, args.limit, args.threshold)
-            Log.d(TAG, "Search found ${uris.size} photos for query: ${args.query}")
+            Log.d(TAG, "✅ Search found ${uris.size} photos for query: ${args.query}")
             
             // Update UI with search results via callback
             onSearchResults?.invoke(uris)
             
             // Return URIs as a JSON array that can be easily extracted and passed to other tools
             val urisJson = uris.joinToString(",") { "\"$it\"" }
-            """{"photoUris": [$urisJson], "count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
+            val result = """{"photoUris": [$urisJson], "count": ${uris.size}, "message": "Found ${uris.size} photos matching '${args.query}'"}"""
+            Log.d(TAG, "📤 Returning: $result")
+            result
         } catch (e: Exception) {
-            Log.e(TAG, "Error searching photos", e)
+            Log.e(TAG, "❌ Error searching photos", e)
             """{"error": "Failed to search photos: ${e.message}"}"""
         }
     }
@@ -67,20 +87,38 @@ class GalleryToolSet(
     @LLMDescription("Moves the specified photos to trash. They can be restored later from the Trash album. No system permissions required.")
     suspend fun deletePhotos(args: DeletePhotosArgs): String {
         return try {
+            // Log and display the LLM's function call
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: deletePhotos")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("deletePhotos", argsJson)
+            
+            Log.d(TAG, "🔧 Executing: deletePhotos")
+            Log.d(TAG, "  - Photo count: ${args.photoUris.size}")
+            
             if (args.photoUris.isEmpty()) {
                 return """{"error": "No photos provided to delete"}"""
             }
             
-            Log.d(TAG, "Moving ${args.photoUris.size} photos to trash")
+            Log.d(TAG, "🗑️ Moving ${args.photoUris.size} photos to trash...")
             val success = galleryTools.moveToTrash(args.photoUris)
             
             if (success) {
-                """{"success": true, "count": ${args.photoUris.size}, "message": "Moved ${args.photoUris.size} photos to trash"}"""
+                val result = """{"success": true, "count": ${args.photoUris.size}, "message": "Moved ${args.photoUris.size} photos to trash"}"""
+                Log.d(TAG, "✅ Successfully moved to trash")
+                Log.d(TAG, "📤 Returning: $result")
+                result
             } else {
+                Log.e(TAG, "❌ Failed to move photos to trash")
                 """{"error": "Failed to move photos to trash"}"""
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error in delete photos", e)
+            Log.e(TAG, "❌ Error in delete photos", e)
             """{"error": "Failed to delete photos: ${e.message}"}"""
         }
     }
@@ -96,6 +134,17 @@ class GalleryToolSet(
     @Tool
     @LLMDescription("Moves photos to a specified album/folder. Creates the album if it doesn't exist. Requires user permission on Android 11+.")
     suspend fun movePhotosToAlbum(args: MovePhotosArgs): String {
+        // Log the LLM's function call JSON
+        val argsJson = Json.encodeToString(args)
+        Log.d(TAG, "\n" + "=".repeat(60))
+        Log.d(TAG, "📞 LLM FUNCTION CALL")
+        Log.d(TAG, "Function: movePhotosToAlbum")
+        Log.d(TAG, "Arguments JSON: $argsJson")
+        Log.d(TAG, "=".repeat(60))
+        
+        // Send to chat UI
+        onFunctionCall?.invoke("movePhotosToAlbum", argsJson)
+        
         return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             """{"error": "Move operation requires Android 11+"}"""
         } else {
@@ -121,6 +170,17 @@ class GalleryToolSet(
     @LLMDescription("Creates a collage from multiple photos by stitching them together vertically. Saves the result as a new image.")
     suspend fun createCollage(args: CreateCollageArgs): String {
         return try {
+            // Log the LLM's function call JSON
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: createCollage")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("createCollage", argsJson)
+            
             if (args.photoUris.isEmpty()) {
                 return """{"error": "No photos provided for collage"}"""
             }
@@ -149,8 +209,19 @@ class GalleryToolSet(
     @LLMDescription("Applies a visual filter to photos and saves them as new images. Supported filters: grayscale, sepia.")
     suspend fun applyFilter(args: ApplyFilterArgs): String {
         return try {
+            // Log and display the LLM's function call
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: applyFilter")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("applyFilter", argsJson)
+            
             if (args.photoUris.isEmpty()) {
-                return """{"error": "No photos provided to apply filter"}"""
+                return """{{"error": "No photos provided to apply filter"}}"""
             }
             val newUris = galleryTools.applyFilter(args.photoUris, args.filterName)
             Log.d(TAG, "Filter '${args.filterName}' applied to ${newUris.size} photos")
@@ -171,6 +242,17 @@ class GalleryToolSet(
     @LLMDescription("Lists all photo albums/folders in the gallery with their photo counts.")
     suspend fun getAlbums(args: GetAlbumsArgs = GetAlbumsArgs()): String {
         return try {
+            // Log and display the LLM's function call
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: getAlbums")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("getAlbums", argsJson)
+            
             val albums = galleryTools.getAlbums()
             val albumsJson = albums.joinToString(",") { album ->
                 """{"name": "${album.name}", "photoCount": ${album.photoCount}}"""
@@ -195,6 +277,17 @@ class GalleryToolSet(
     @LLMDescription("Gets a paginated list of all photos in the gallery, sorted by date taken (newest first).")
     suspend fun getPhotos(args: GetPhotosArgs): String {
         return try {
+            // Log and display the LLM's function call
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: getPhotos")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("getPhotos", argsJson)
+            
             val photos = galleryTools.getPhotos(args.page, args.pageSize)
             Log.d(TAG, "Retrieved ${photos.size} photos for page ${args.page}")
             """{"photoUris": ${photos.map { "\"$it\"" }}, "count": ${photos.size}, "page": ${args.page}}"""
@@ -218,6 +311,17 @@ class GalleryToolSet(
     @LLMDescription("Gets photos from a specific album, with pagination support.")
     suspend fun getPhotosForAlbum(args: GetPhotosForAlbumArgs): String {
         return try {
+            // Log and display the LLM's function call
+            val argsJson = Json.encodeToString(args)
+            Log.d(TAG, "\n" + "=".repeat(60))
+            Log.d(TAG, "📞 LLM FUNCTION CALL")
+            Log.d(TAG, "Function: getPhotosForAlbum")
+            Log.d(TAG, "Arguments JSON: $argsJson")
+            Log.d(TAG, "=".repeat(60))
+            
+            // Send to chat UI
+            onFunctionCall?.invoke("getPhotosForAlbum", argsJson)
+            
             val photos = galleryTools.getPhotosForAlbum(args.albumName, args.page, args.pageSize)
             Log.d(TAG, "Retrieved ${photos.size} photos from album '${args.albumName}'")
             """{"photoUris": ${photos.map { "\"$it\"" }}, "count": ${photos.size}, "albumName": "${args.albumName}", "page": ${args.page}}"""
