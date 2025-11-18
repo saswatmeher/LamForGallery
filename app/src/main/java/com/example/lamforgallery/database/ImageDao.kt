@@ -26,8 +26,14 @@ interface ImageDao {
     @Query("SELECT * FROM images WHERE isTrashed = 1 ORDER BY trashedTimestamp DESC LIMIT :limit OFFSET :offset")
     suspend fun getTrashedImages(limit: Int, offset: Int): List<ImageEntity>
     
+    @Query("SELECT COUNT(*) FROM images WHERE isTrashed = 1")
+    suspend fun getTrashedCount(): Int
+    
     @Query("UPDATE images SET isTrashed = :isTrashed, trashedTimestamp = :timestamp WHERE uri IN (:uris)")
     suspend fun updateTrashStatus(uris: List<String>, isTrashed: Boolean, timestamp: Long)
+    
+    @Query("UPDATE images SET isTrashed = 0, trashedTimestamp = 0 WHERE isTrashed = 1")
+    suspend fun restoreAllFromTrash()
     
     @Query("UPDATE images SET albumName = :albumName WHERE uri IN (:uris)")
     suspend fun updateAlbum(uris: List<String>, albumName: String)

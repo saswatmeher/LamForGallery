@@ -45,7 +45,8 @@ data class AlbumDetailState(
     val albumName: String = "",
     val selectedPhotos: Set<String> = emptySet(),
     val isSelectionMode: Boolean = false,
-    val showDeleteDialog: Boolean = false
+    val showDeleteDialog: Boolean = false,
+    val isTrashAlbum: Boolean = false
 )
 
 // --- ViewModel ---
@@ -67,7 +68,8 @@ class AlbumDetailViewModel(
             name
         }
 
-        _uiState.value = AlbumDetailState(albumName = decodedName)
+        val isTrash = decodedName == "Trash"
+        _uiState.value = AlbumDetailState(albumName = decodedName, isTrashAlbum = isTrash)
         loadNextPage()
     }
 
@@ -83,11 +85,18 @@ class AlbumDetailViewModel(
             _uiState.update { it.copy(isLoading = true) }
 
             val newPhotos = try {
-                galleryTools.getPhotosForAlbum(
-                    albumName = currentState.albumName,
-                    page = currentState.page,
-                    pageSize = ALBUM_PAGE_SIZE
-                )
+                if (currentState.isTrashAlbum) {
+                    galleryTools.getTrashPhotos(
+                        page = currentState.page,
+                        pageSize = ALBUM_PAGE_SIZE
+                    )
+                } else {
+                    galleryTools.getPhotosForAlbum(
+                        albumName = currentState.albumName,
+                        page = currentState.page,
+                        pageSize = ALBUM_PAGE_SIZE
+                    )
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load photos for album", e)
                 emptyList<String>()
@@ -168,6 +177,24 @@ class AlbumDetailViewModel(
             }
         }
     }
+
+    fun restoreAllFromTrash(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                galleryTools.restoreAllFromTrash()
+                _uiState.update {
+                    it.copy(
+                        photos = emptyList(),
+                        selectedPhotos = emptySet(),
+                        isSelectionMode = false
+                    )
+                }
+                onComplete()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to restore all photos", e)
+            }
+        }
+    }
 }
 
 // --- Composable UI ---
@@ -217,6 +244,19 @@ fun AlbumDetailScreen(
                     navigationIcon = {
                         IconButton(onClick = onNavigateBack) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        if (uiState.isTrashAlbum && uiState.photos.isNotEmpty()) {
+                            TextButton(
+                                onClick = {
+                                    viewModel.restoreAllFromTrash {
+                                        onPhotosDeleted()
+                                    }
+                                }
+                            ) {
+                                Text("Restore All")
+                            }
                         }
                     }
                 )

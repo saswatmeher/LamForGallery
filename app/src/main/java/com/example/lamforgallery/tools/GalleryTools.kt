@@ -250,10 +250,10 @@ class GalleryTools(
     }
 
     /**
-     * Restores photos from trash by updating database flag.
+     * Restores photos from trash by updating database.
      */
     suspend fun restoreFromTrash(photoUris: List<String>): Boolean {
-        Log.d(TAG, "UI REQUESTED RESTORE FROM TRASH for: $photoUris")
+        Log.d(TAG, "UI REQUESTED RESTORE from trash for: $photoUris")
         return withContext(Dispatchers.IO) {
             try {
                 imageDao.updateTrashStatus(photoUris, isTrashed = false, timestamp = 0)
@@ -261,6 +261,23 @@ class GalleryTools(
                 true
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to restore photos from trash", e)
+                false
+            }
+        }
+    }
+
+    /**
+     * Restores all photos from trash.
+     */
+    suspend fun restoreAllFromTrash(): Boolean {
+        Log.d(TAG, "UI REQUESTED RESTORE ALL from trash")
+        return withContext(Dispatchers.IO) {
+            try {
+                imageDao.restoreAllFromTrash()
+                Log.d(TAG, "Successfully restored all photos from trash")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to restore all photos from trash", e)
                 false
             }
         }
@@ -435,6 +452,20 @@ class GalleryTools(
                             name = albumInfo.albumName,
                             coverUri = coverUri,
                             photoCount = albumInfo.photoCount
+                        )
+                    )
+                }
+                
+                // Add Trash album if there are trashed photos
+                val trashedPhotos = imageDao.getTrashedImages(limit = 1, offset = 0)
+                if (trashedPhotos.isNotEmpty()) {
+                    val trashedCount = imageDao.getTrashedCount()
+                    albums.add(
+                        0, // Add at the beginning
+                        Album(
+                            name = "Trash",
+                            coverUri = trashedPhotos.first().uri,
+                            photoCount = trashedCount
                         )
                     )
                 }

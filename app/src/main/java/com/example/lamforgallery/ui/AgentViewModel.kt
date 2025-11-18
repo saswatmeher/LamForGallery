@@ -123,7 +123,7 @@ class AgentViewModel(
                 // Create a fresh agent instance for each message to avoid "already started" errors
                 val freshAgent = AIAgent(
                     promptExecutor = simpleOllamaAIExecutor(
-                        baseUrl = "http://192.168.1.10:11434"
+                        baseUrl = "http://192.168.1.8:11436"
                     ),
                     llmModel = LLModel(
                         provider = LLMProvider.Ollama,
@@ -179,7 +179,7 @@ class AgentViewModel(
         
         agent = AIAgent(
             promptExecutor = simpleOllamaAIExecutor(
-                baseUrl = "http://10.0.2.2:11434"
+                baseUrl = "http://192.168.1.8:11436"
             ),
             llmModel = LLModel(
                 provider = LLMProvider.Ollama,
